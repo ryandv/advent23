@@ -4,9 +4,10 @@
 // https://www.cs.dartmouth.edu/~ac/Teach/CS105-Winter05/Handouts/stoerwagner-mincut.pdf
 use std::io;
 use std::io::prelude::*;
+use std::collections::HashMap;
 use std::collections::HashSet;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct Graph<T: Clone + Eq + std::hash::Hash> {
     pub vertices: HashSet<T>,
     pub edges: HashSet<(T, T)>,
@@ -26,6 +27,12 @@ impl<T: Clone + Eq + std::hash::Hash> Graph<T> {
         });
 
         g
+    }
+
+    fn most_tightly_connected(&self) -> Option<&T> {
+        self.vertices.iter().max_by_key(|v| {
+            self.edges.iter().filter(|e| e.0 == **v || e.1 == **v).collect::<Vec<&(T, T)>>().len()
+        })
     }
 }
 
@@ -51,14 +58,21 @@ fn parse_input(input: &str) -> Result<Graph<&str>, &str> {
 }
 
 #[cfg(test)]
+extern crate quickcheck;
+#[cfg(test)]
+#[macro_use(quickcheck)]
+extern crate quickcheck_macros;
+
+#[cfg(test)]
 mod test {
     use super::*;
 
-    // test on graphs with 20 vertices
+    const TEST_GRAPH_VERTEX_COUNT: usize = 20;
+
     impl quickcheck::Arbitrary for Graph<usize> {
         fn arbitrary(gen: &mut quickcheck::Gen) -> Graph<usize> {
-            Graph::from_adjacency_list((0..20)
-                .map(|i| (i, (0..20).map(|_| bool::arbitrary(gen)).collect::<Vec<bool>>()))
+            Graph::from_adjacency_list((0..TEST_GRAPH_VERTEX_COUNT)
+                .map(|i| (i, (0..TEST_GRAPH_VERTEX_COUNT).map(|j| i != j && bool::arbitrary(gen)).collect::<Vec<bool>>()))
                 .flat_map(|(i, neighbours)| {
                     neighbours
                         .iter()
@@ -181,5 +195,28 @@ mod test {
         let g = Graph::from_adjacency_list(adjacency_list.clone());
         assert_eq!(expected_vertices, g.vertices);
         assert_eq!(adjacency_list, g.edges);
+    }
+
+    #[quickcheck]
+    fn finds_most_tightly_connected_vertex(g: Graph<usize>) {
+        if g.edges.len() == 0 {
+            return;
+        }
+        let mut dc = g.edges.iter().fold(HashMap::<usize, usize>::new(), |mut h, (u, v)| {
+            match h.get(u) {
+                None => { h.insert(*u, 1) }
+                Some(n) => { h.insert(*u, n + 1) }
+            };
+            match h.get(v) {
+                None => { h.insert(*v, 1) }
+                Some(n) => { h.insert(*v, n + 1) }
+            };
+            h
+        });
+
+        let v = g.most_tightly_connected().unwrap();
+        let expected_vertex = dc.iter().max_by_key(|kv| kv.1).unwrap().0;
+
+        assert!(dc.iter().all(|(_v, degree)| *degree <= *dc.get(v).unwrap()), "expected {:?}, got {:?}", expected_vertex, v);
     }
 }
