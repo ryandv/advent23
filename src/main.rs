@@ -2,47 +2,77 @@
 //
 // Stoer-Wagner algorithm over graphs with constant weight 1
 // https://www.cs.dartmouth.edu/~ac/Teach/CS105-Winter05/Handouts/stoerwagner-mincut.pdf
+
 use std::io;
 use std::io::prelude::*;
+
 use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::collections::HashSet;
 
+use std::rc::Rc;
+
 #[derive(Clone, Debug)]
 struct Graph<T: Clone + Eq + Ord + std::hash::Hash> {
-    pub vertices: HashSet<BTreeSet<T>>,
-    pub edges: HashMap<UnorderedPair<BTreeSet<T>>, usize>, // TODO: consider an Rc or something here..
+    pub vertices: HashSet<Vertex<T>>,
+    pub edges: HashMap<UnorderedPair<Vertex<T>>, usize>,
+}
+
+#[derive(PartialEq, Eq, Clone, Debug, std::hash::Hash, Ord, PartialOrd)]
+struct Vertex<T: Clone + Eq + Ord + std::hash::Hash>(BTreeSet<Rc<T>>);
+
+impl<T: Clone + Eq + Ord + std::hash::Hash> Vertex<T> {
+    pub fn new(t: T) -> Vertex<T> {
+        Vertex(BTreeSet::from([Rc::new(t)]))
+    }
+
+    pub fn merge(&self, other: &Self) -> Vertex<T> {
+        let Vertex(u) = self;
+        let Vertex(v) = other;
+        Vertex(u | v)
+    }
+}
+
+impl<T: Clone + Eq + Ord + std::hash::Hash> IntoIterator for Vertex<T> {
+    type Item = Rc<T>;
+    type IntoIter = <std::collections::BTreeSet<Rc<T>> as IntoIterator>::IntoIter;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
 }
 
 impl<T: Clone + Eq + Ord + std::hash::Hash> Graph<T> {
-    fn from_adjacency_list<I: std::iter::IntoIterator<Item = (UnorderedPair<BTreeSet<T>>, usize)>>(adjacency_list: I) -> Graph<T> {
+    pub fn from_adjacency_lists<I: std::iter::IntoIterator<Item = (UnorderedPair<T>, usize)>>(adjacency_list: I) -> Graph<T> {
         let mut g = Graph {
             vertices: HashSet::new(),
             edges: HashMap::new(),
         };
 
         adjacency_list.into_iter().for_each(|(UnorderedPair((u, v)), _w)| {
-            g.vertices.insert(u.clone());
-            g.vertices.insert(v.clone());
-            g.edges.insert(UnorderedPair((u, v)), 1);
+            let vu = Vertex::new(u);
+            let vv = Vertex::new(v);
+            g.vertices.insert(vu.clone());
+            g.vertices.insert(vv.clone());
+            g.edges.insert(UnorderedPair((vu, vv)), 1);
         });
 
         g
     }
 
-    fn most_tightly_connected(&self, scanned_vertices: HashSet<BTreeSet<T>>) -> Option<BTreeSet<T>> {
+    fn most_tightly_connected(&self, scanned_vertices: HashSet<Vertex<T>>) -> Option<Vertex<T>> {
         self.vertices.difference(&scanned_vertices).max_by_key(|v| {
             self.edges
                 .iter()
                 .filter(|(UnorderedPair(e), _w)| (**v == e.0 && scanned_vertices.contains(&e.1)) || (**v == e.1 && scanned_vertices.contains(&e.0)))
-                .collect::<Vec<(&UnorderedPair<BTreeSet<T>>, &usize)>>().len()
+                .collect::<Vec<(&UnorderedPair<Vertex<T>>, &usize)>>().len()
         }).cloned()
     }
 
-    fn merge(&self, u: &BTreeSet<T>, v: &BTreeSet<T>) -> Graph<T> {
+    fn merge(&self, u: &Vertex<T>, v: &Vertex<T>) -> Graph<T> {
         let mut g = Graph {
             vertices: HashSet::new(),
-            edges: HashMap::<UnorderedPair<BTreeSet<T>>, usize>::new(),
+            edges: HashMap::<UnorderedPair<Vertex<T>>, usize>::new(),
         };
 
         self.vertices.iter().for_each(|x| {
@@ -55,17 +85,17 @@ impl<T: Clone + Eq + Ord + std::hash::Hash> Graph<T> {
                 if e.contains(&u) {
                     let x = e.partner(&u);
                     let w0 = w + self.edges.get(&UnorderedPair((x.clone(), v.clone()))).unwrap_or(&0);
-                    g.edges.insert(UnorderedPair((u | v, x.clone())), w0);
+                    g.edges.insert(UnorderedPair((u.merge(v), x.clone())), w0);
                 } else if e.contains(&v) {
                     let x = e.partner(&v);
                     let w0 = w + self.edges.get(&UnorderedPair((x.clone(), u.clone()))).unwrap_or(&0);
-                    g.edges.insert(UnorderedPair((u | v, x.clone())), w0);
+                    g.edges.insert(UnorderedPair((u.merge(v), x.clone())), w0);
                 } else {
                     g.edges.insert(UnorderedPair((s.clone(), t.clone())), *w);
                 }
             }
         });
-        g.vertices.insert(u | v);
+        g.vertices.insert(u.merge(v));
 
         g
     }
@@ -121,10 +151,10 @@ fn parse_input(input: &str) -> Result<Graph<&str>, &str> {
     input.lines().try_fold(Graph { vertices: HashSet::new(), edges: HashMap::new() }, |mut g, ln| -> Result<Graph<&str>, &str> {
         let (u, vs) = ln.split_once(": ").ok_or("missing colon delimiter")?;
 
-        g.vertices.insert(BTreeSet::from_iter([u]));
+        g.vertices.insert(Vertex::new(u));
         vs.split(" ").for_each(|v| {
-            g.vertices.insert(BTreeSet::from_iter([v]));
-            g.edges.insert(UnorderedPair((BTreeSet::from_iter([u]), BTreeSet::from_iter([v]))), 1);
+            g.vertices.insert(Vertex::new(v));
+            g.edges.insert(UnorderedPair((Vertex::new(u), Vertex::new(v))), 1);
         });
 
         Ok(g)
@@ -139,23 +169,24 @@ extern crate quickcheck_macros;
 
 #[cfg(test)]
 mod test {
+    use std::ops::Deref;
     use super::*;
 
     const TEST_GRAPH_VERTEX_COUNT: usize = 3;
 
     impl quickcheck::Arbitrary for Graph<usize> {
         fn arbitrary(gen: &mut quickcheck::Gen) -> Graph<usize> {
-            Graph::from_adjacency_list((0..TEST_GRAPH_VERTEX_COUNT)
+            Graph::from_adjacency_lists((0..TEST_GRAPH_VERTEX_COUNT)
                 .map(|i| (i, (0..TEST_GRAPH_VERTEX_COUNT).map(|j| i != j && bool::arbitrary(gen)).collect::<Vec<bool>>()))
                 .flat_map(|(i, neighbours)| {
                     neighbours
                         .iter()
                         .enumerate()
                         .filter(|adjacency| *adjacency.1)
-                        .map(|adjacency| (UnorderedPair((BTreeSet::from_iter([i]), BTreeSet::from_iter([adjacency.0]))), 1))
-                        .collect::<Vec<(UnorderedPair<BTreeSet<usize>>, usize)>>()
+                        .map(|adjacency| (UnorderedPair((i, adjacency.0)), 1))
+                        .collect::<Vec<(UnorderedPair<usize>, usize)>>()
                 })
-                .collect::<Vec<(UnorderedPair<BTreeSet<usize>>, usize)>>())
+                .collect::<Vec<(UnorderedPair<usize>, usize)>>())
         }
     }
 
@@ -185,45 +216,45 @@ mod test {
              rzs: qnr cmg lsr rsh\n\
              frs: qnr lhk lsr";
         let expected_vertices = HashSet::from_iter([
-            BTreeSet::from_iter(["bvb"]),BTreeSet::from_iter(["cmg"]),BTreeSet::from_iter(["frs"]),BTreeSet::from_iter(["hfx"]),
-            BTreeSet::from_iter(["jqt"]),BTreeSet::from_iter(["lhk"]),BTreeSet::from_iter(["lsr"]),BTreeSet::from_iter(["ntq"]),
-            BTreeSet::from_iter(["nvd"]),BTreeSet::from_iter(["pzl"]),BTreeSet::from_iter(["qnr"]),BTreeSet::from_iter(["rhn"]),
-            BTreeSet::from_iter(["rsh"]),BTreeSet::from_iter(["rzs"]),BTreeSet::from_iter(["xhk"])
+            Vertex::new("bvb"),Vertex::new("cmg"),Vertex::new("frs"),Vertex::new("hfx"),
+            Vertex::new("jqt"),Vertex::new("lhk"),Vertex::new("lsr"),Vertex::new("ntq"),
+            Vertex::new("nvd"),Vertex::new("pzl"),Vertex::new("qnr"),Vertex::new("rhn"),
+            Vertex::new("rsh"),Vertex::new("rzs"),Vertex::new("xhk")
         ]);
         let expected_edges = HashMap::from_iter([
-            (UnorderedPair((BTreeSet::from_iter(["jqt"]), BTreeSet::from_iter(["rhn"]))), 1),
-            (UnorderedPair((BTreeSet::from_iter(["jqt"]), BTreeSet::from_iter(["xhk"]))), 1),
-            (UnorderedPair((BTreeSet::from_iter(["jqt"]), BTreeSet::from_iter(["nvd"]))), 1),
-            (UnorderedPair((BTreeSet::from_iter(["rsh"]), BTreeSet::from_iter(["frs"]))), 1),
-            (UnorderedPair((BTreeSet::from_iter(["rsh"]), BTreeSet::from_iter(["pzl"]))), 1),
-            (UnorderedPair((BTreeSet::from_iter(["rsh"]), BTreeSet::from_iter(["lsr"]))), 1),
-            (UnorderedPair((BTreeSet::from_iter(["xhk"]), BTreeSet::from_iter(["hfx"]))), 1),
-            (UnorderedPair((BTreeSet::from_iter(["cmg"]), BTreeSet::from_iter(["qnr"]))), 1),
-            (UnorderedPair((BTreeSet::from_iter(["cmg"]), BTreeSet::from_iter(["nvd"]))), 1),
-            (UnorderedPair((BTreeSet::from_iter(["cmg"]), BTreeSet::from_iter(["lhk"]))), 1),
-            (UnorderedPair((BTreeSet::from_iter(["cmg"]), BTreeSet::from_iter(["bvb"]))), 1),
-            (UnorderedPair((BTreeSet::from_iter(["rhn"]), BTreeSet::from_iter(["xhk"]))), 1),
-            (UnorderedPair((BTreeSet::from_iter(["rhn"]), BTreeSet::from_iter(["bvb"]))), 1),
-            (UnorderedPair((BTreeSet::from_iter(["rhn"]), BTreeSet::from_iter(["hfx"]))), 1),
-            (UnorderedPair((BTreeSet::from_iter(["bvb"]), BTreeSet::from_iter(["xhk"]))), 1),
-            (UnorderedPair((BTreeSet::from_iter(["bvb"]), BTreeSet::from_iter(["hfx"]))), 1),
-            (UnorderedPair((BTreeSet::from_iter(["pzl"]), BTreeSet::from_iter(["lsr"]))), 1),
-            (UnorderedPair((BTreeSet::from_iter(["pzl"]), BTreeSet::from_iter(["hfx"]))), 1),
-            (UnorderedPair((BTreeSet::from_iter(["pzl"]), BTreeSet::from_iter(["nvd"]))), 1),
-            (UnorderedPair((BTreeSet::from_iter(["qnr"]), BTreeSet::from_iter(["nvd"]))), 1),
-            (UnorderedPair((BTreeSet::from_iter(["ntq"]), BTreeSet::from_iter(["jqt"]))), 1),
-            (UnorderedPair((BTreeSet::from_iter(["ntq"]), BTreeSet::from_iter(["hfx"]))), 1),
-            (UnorderedPair((BTreeSet::from_iter(["ntq"]), BTreeSet::from_iter(["bvb"]))), 1),
-            (UnorderedPair((BTreeSet::from_iter(["ntq"]), BTreeSet::from_iter(["xhk"]))), 1),
-            (UnorderedPair((BTreeSet::from_iter(["nvd"]), BTreeSet::from_iter(["lhk"]))), 1),
-            (UnorderedPair((BTreeSet::from_iter(["lsr"]), BTreeSet::from_iter(["lhk"]))), 1),
-            (UnorderedPair((BTreeSet::from_iter(["rzs"]), BTreeSet::from_iter(["qnr"]))), 1),
-            (UnorderedPair((BTreeSet::from_iter(["rzs"]), BTreeSet::from_iter(["cmg"]))), 1),
-            (UnorderedPair((BTreeSet::from_iter(["rzs"]), BTreeSet::from_iter(["lsr"]))), 1),
-            (UnorderedPair((BTreeSet::from_iter(["rzs"]), BTreeSet::from_iter(["rsh"]))), 1),
-            (UnorderedPair((BTreeSet::from_iter(["frs"]), BTreeSet::from_iter(["qnr"]))), 1),
-            (UnorderedPair((BTreeSet::from_iter(["frs"]), BTreeSet::from_iter(["lhk"]))), 1),
-            (UnorderedPair((BTreeSet::from_iter(["frs"]), BTreeSet::from_iter(["lsr"]))), 1),
+            (UnorderedPair((Vertex::new("jqt"), Vertex::new("rhn"))), 1),
+            (UnorderedPair((Vertex::new("jqt"), Vertex::new("xhk"))), 1),
+            (UnorderedPair((Vertex::new("jqt"), Vertex::new("nvd"))), 1),
+            (UnorderedPair((Vertex::new("rsh"), Vertex::new("frs"))), 1),
+            (UnorderedPair((Vertex::new("rsh"), Vertex::new("pzl"))), 1),
+            (UnorderedPair((Vertex::new("rsh"), Vertex::new("lsr"))), 1),
+            (UnorderedPair((Vertex::new("xhk"), Vertex::new("hfx"))), 1),
+            (UnorderedPair((Vertex::new("cmg"), Vertex::new("qnr"))), 1),
+            (UnorderedPair((Vertex::new("cmg"), Vertex::new("nvd"))), 1),
+            (UnorderedPair((Vertex::new("cmg"), Vertex::new("lhk"))), 1),
+            (UnorderedPair((Vertex::new("cmg"), Vertex::new("bvb"))), 1),
+            (UnorderedPair((Vertex::new("rhn"), Vertex::new("xhk"))), 1),
+            (UnorderedPair((Vertex::new("rhn"), Vertex::new("bvb"))), 1),
+            (UnorderedPair((Vertex::new("rhn"), Vertex::new("hfx"))), 1),
+            (UnorderedPair((Vertex::new("bvb"), Vertex::new("xhk"))), 1),
+            (UnorderedPair((Vertex::new("bvb"), Vertex::new("hfx"))), 1),
+            (UnorderedPair((Vertex::new("pzl"), Vertex::new("lsr"))), 1),
+            (UnorderedPair((Vertex::new("pzl"), Vertex::new("hfx"))), 1),
+            (UnorderedPair((Vertex::new("pzl"), Vertex::new("nvd"))), 1),
+            (UnorderedPair((Vertex::new("qnr"), Vertex::new("nvd"))), 1),
+            (UnorderedPair((Vertex::new("ntq"), Vertex::new("jqt"))), 1),
+            (UnorderedPair((Vertex::new("ntq"), Vertex::new("hfx"))), 1),
+            (UnorderedPair((Vertex::new("ntq"), Vertex::new("bvb"))), 1),
+            (UnorderedPair((Vertex::new("ntq"), Vertex::new("xhk"))), 1),
+            (UnorderedPair((Vertex::new("nvd"), Vertex::new("lhk"))), 1),
+            (UnorderedPair((Vertex::new("lsr"), Vertex::new("lhk"))), 1),
+            (UnorderedPair((Vertex::new("rzs"), Vertex::new("qnr"))), 1),
+            (UnorderedPair((Vertex::new("rzs"), Vertex::new("cmg"))), 1),
+            (UnorderedPair((Vertex::new("rzs"), Vertex::new("lsr"))), 1),
+            (UnorderedPair((Vertex::new("rzs"), Vertex::new("rsh"))), 1),
+            (UnorderedPair((Vertex::new("frs"), Vertex::new("qnr"))), 1),
+            (UnorderedPair((Vertex::new("frs"), Vertex::new("lhk"))), 1),
+            (UnorderedPair((Vertex::new("frs"), Vertex::new("lsr"))), 1),
         ]);
 
         let g = parse_input(input).unwrap();
@@ -233,51 +264,51 @@ mod test {
 
     #[test]
     fn graphs_constructible_from_adjacency_lists() {
-        let adjacency_list = HashMap::from_iter([
-            (UnorderedPair((BTreeSet::from_iter(["jqt"]), BTreeSet::from_iter(["rhn"]))), 1),
-            (UnorderedPair((BTreeSet::from_iter(["jqt"]), BTreeSet::from_iter(["xhk"]))), 1),
-            (UnorderedPair((BTreeSet::from_iter(["jqt"]), BTreeSet::from_iter(["nvd"]))), 1),
-            (UnorderedPair((BTreeSet::from_iter(["rsh"]), BTreeSet::from_iter(["frs"]))), 1),
-            (UnorderedPair((BTreeSet::from_iter(["rsh"]), BTreeSet::from_iter(["pzl"]))), 1),
-            (UnorderedPair((BTreeSet::from_iter(["rsh"]), BTreeSet::from_iter(["lsr"]))), 1),
-            (UnorderedPair((BTreeSet::from_iter(["xhk"]), BTreeSet::from_iter(["hfx"]))), 1),
-            (UnorderedPair((BTreeSet::from_iter(["cmg"]), BTreeSet::from_iter(["qnr"]))), 1),
-            (UnorderedPair((BTreeSet::from_iter(["cmg"]), BTreeSet::from_iter(["nvd"]))), 1),
-            (UnorderedPair((BTreeSet::from_iter(["cmg"]), BTreeSet::from_iter(["lhk"]))), 1),
-            (UnorderedPair((BTreeSet::from_iter(["cmg"]), BTreeSet::from_iter(["bvb"]))), 1),
-            (UnorderedPair((BTreeSet::from_iter(["rhn"]), BTreeSet::from_iter(["xhk"]))), 1),
-            (UnorderedPair((BTreeSet::from_iter(["rhn"]), BTreeSet::from_iter(["bvb"]))), 1),
-            (UnorderedPair((BTreeSet::from_iter(["rhn"]), BTreeSet::from_iter(["hfx"]))), 1),
-            (UnorderedPair((BTreeSet::from_iter(["bvb"]), BTreeSet::from_iter(["xhk"]))), 1),
-            (UnorderedPair((BTreeSet::from_iter(["bvb"]), BTreeSet::from_iter(["hfx"]))), 1),
-            (UnorderedPair((BTreeSet::from_iter(["pzl"]), BTreeSet::from_iter(["lsr"]))), 1),
-            (UnorderedPair((BTreeSet::from_iter(["pzl"]), BTreeSet::from_iter(["hfx"]))), 1),
-            (UnorderedPair((BTreeSet::from_iter(["pzl"]), BTreeSet::from_iter(["nvd"]))), 1),
-            (UnorderedPair((BTreeSet::from_iter(["qnr"]), BTreeSet::from_iter(["nvd"]))), 1),
-            (UnorderedPair((BTreeSet::from_iter(["ntq"]), BTreeSet::from_iter(["jqt"]))), 1),
-            (UnorderedPair((BTreeSet::from_iter(["ntq"]), BTreeSet::from_iter(["hfx"]))), 1),
-            (UnorderedPair((BTreeSet::from_iter(["ntq"]), BTreeSet::from_iter(["bvb"]))), 1),
-            (UnorderedPair((BTreeSet::from_iter(["ntq"]), BTreeSet::from_iter(["xhk"]))), 1),
-            (UnorderedPair((BTreeSet::from_iter(["nvd"]), BTreeSet::from_iter(["lhk"]))), 1),
-            (UnorderedPair((BTreeSet::from_iter(["lsr"]), BTreeSet::from_iter(["lhk"]))), 1),
-            (UnorderedPair((BTreeSet::from_iter(["rzs"]), BTreeSet::from_iter(["qnr"]))), 1),
-            (UnorderedPair((BTreeSet::from_iter(["rzs"]), BTreeSet::from_iter(["cmg"]))), 1),
-            (UnorderedPair((BTreeSet::from_iter(["rzs"]), BTreeSet::from_iter(["lsr"]))), 1),
-            (UnorderedPair((BTreeSet::from_iter(["rzs"]), BTreeSet::from_iter(["rsh"]))), 1),
-            (UnorderedPair((BTreeSet::from_iter(["frs"]), BTreeSet::from_iter(["qnr"]))), 1),
-            (UnorderedPair((BTreeSet::from_iter(["frs"]), BTreeSet::from_iter(["lhk"]))), 1),
-            (UnorderedPair((BTreeSet::from_iter(["frs"]), BTreeSet::from_iter(["lsr"]))), 1),
+        let adjacency_list: HashMap<UnorderedPair<&str>, usize> = HashMap::from_iter([
+            (UnorderedPair(("jqt", "rhn")), 1),
+            (UnorderedPair(("jqt", "xhk")), 1),
+            (UnorderedPair(("jqt", "nvd")), 1),
+            (UnorderedPair(("rsh", "frs")), 1),
+            (UnorderedPair(("rsh", "pzl")), 1),
+            (UnorderedPair(("rsh", "lsr")), 1),
+            (UnorderedPair(("xhk", "hfx")), 1),
+            (UnorderedPair(("cmg", "qnr")), 1),
+            (UnorderedPair(("cmg", "nvd")), 1),
+            (UnorderedPair(("cmg", "lhk")), 1),
+            (UnorderedPair(("cmg", "bvb")), 1),
+            (UnorderedPair(("rhn", "xhk")), 1),
+            (UnorderedPair(("rhn", "bvb")), 1),
+            (UnorderedPair(("rhn", "hfx")), 1),
+            (UnorderedPair(("bvb", "xhk")), 1),
+            (UnorderedPair(("bvb", "hfx")), 1),
+            (UnorderedPair(("pzl", "lsr")), 1),
+            (UnorderedPair(("pzl", "hfx")), 1),
+            (UnorderedPair(("pzl", "nvd")), 1),
+            (UnorderedPair(("qnr", "nvd")), 1),
+            (UnorderedPair(("ntq", "jqt")), 1),
+            (UnorderedPair(("ntq", "hfx")), 1),
+            (UnorderedPair(("ntq", "bvb")), 1),
+            (UnorderedPair(("ntq", "xhk")), 1),
+            (UnorderedPair(("nvd", "lhk")), 1),
+            (UnorderedPair(("lsr", "lhk")), 1),
+            (UnorderedPair(("rzs", "qnr")), 1),
+            (UnorderedPair(("rzs", "cmg")), 1),
+            (UnorderedPair(("rzs", "lsr")), 1),
+            (UnorderedPair(("rzs", "rsh")), 1),
+            (UnorderedPair(("frs", "qnr")), 1),
+            (UnorderedPair(("frs", "lhk")), 1),
+            (UnorderedPair(("frs", "lsr")), 1),
         ]);
         let expected_vertices = HashSet::from_iter([
-            BTreeSet::from_iter(["bvb"]),BTreeSet::from_iter(["cmg"]),BTreeSet::from_iter(["frs"]),BTreeSet::from_iter(["hfx"]),
-            BTreeSet::from_iter(["jqt"]),BTreeSet::from_iter(["lhk"]),BTreeSet::from_iter(["lsr"]),BTreeSet::from_iter(["ntq"]),
-            BTreeSet::from_iter(["nvd"]),BTreeSet::from_iter(["pzl"]),BTreeSet::from_iter(["qnr"]),BTreeSet::from_iter(["rhn"]),
-            BTreeSet::from_iter(["rsh"]),BTreeSet::from_iter(["rzs"]),BTreeSet::from_iter(["xhk"])
+            Vertex::new("bvb"),Vertex::new("cmg"),Vertex::new("frs"),Vertex::new("hfx"),
+            Vertex::new("jqt"),Vertex::new("lhk"),Vertex::new("lsr"),Vertex::new("ntq"),
+            Vertex::new("nvd"),Vertex::new("pzl"),Vertex::new("qnr"),Vertex::new("rhn"),
+            Vertex::new("rsh"),Vertex::new("rzs"),Vertex::new("xhk")
         ]);
 
-        let g = Graph::from_adjacency_list(adjacency_list.clone());
+        let g = Graph::from_adjacency_lists(adjacency_list.clone());
         assert_eq!(expected_vertices, g.vertices);
-        assert_eq!(adjacency_list, g.edges);
+        assert_eq!(adjacency_list.iter().map(|(UnorderedPair((u, v)), w)| (UnorderedPair((Vertex::new(*u), Vertex::new(*v))), *w)).collect::<HashMap<UnorderedPair<Vertex<&str>>, usize>>(), g.edges);
     }
 
     #[quickcheck]
@@ -287,14 +318,14 @@ mod test {
         }
 
         let SubsetVector(was_scanned) = previously_scanned;
-        let mut dc = g.edges.iter().fold(HashMap::<BTreeSet<usize>, usize>::new(), |mut h, (UnorderedPair((u, v)), _w)| {
+        let mut dc = g.edges.iter().fold(HashMap::<Vertex<usize>, usize>::new(), |mut h, (UnorderedPair((u, v)), _w)| {
             // all vertices are singleton sets by construction
-            if !was_scanned[*u.first().unwrap()] && was_scanned[*v.first().unwrap()] {
+            if !was_scanned[*u.0.first().unwrap().deref()] && was_scanned[*v.0.first().unwrap().deref()] {
                 match h.get(u) {
                     None => { h.insert(u.clone(), 1) }
                     Some(n) => { h.insert(u.clone(), n + 1) }
                 };
-            } else if was_scanned[*u.first().unwrap()] && !was_scanned[*v.first().unwrap()] {
+            } else if was_scanned[*u.0.first().unwrap().deref()] && !was_scanned[*v.0.first().unwrap().deref()] {
                 match h.get(v) {
                     None => { h.insert(v.clone(), 1) }
                     Some(n) => { h.insert(v.clone(), n + 1) }
@@ -305,7 +336,7 @@ mod test {
         if dc.len() == 0 {
             return quickcheck::TestResult::discard();
         }
-        let scanned_vertices = was_scanned.iter().enumerate().filter(|(v, scanned)| **scanned).map(|p| BTreeSet::from_iter([p.0])).collect::<HashSet<BTreeSet<usize>>>();
+        let scanned_vertices = was_scanned.iter().enumerate().filter(|(v, scanned)| **scanned).map(|p| Vertex::new(p.0)).collect::<HashSet<Vertex<usize>>>();
 
         let v = g.most_tightly_connected(scanned_vertices.clone()).unwrap();
         let expected_vertex = dc.iter().max_by_key(|kv| kv.1).unwrap().0;
@@ -320,10 +351,10 @@ mod test {
         if nu >= TEST_GRAPH_VERTEX_COUNT || nv >= TEST_GRAPH_VERTEX_COUNT || nu == nv {
             return quickcheck::TestResult::discard();
         }
-        let u = BTreeSet::from_iter([nu]);
-        let v = BTreeSet::from_iter([nv]);
-        let expected_merge = &u | &v;
-        let mut merged_edges: Vec<(BTreeSet<usize>, &UnorderedPair<BTreeSet<usize>>)> = g.vertices
+        let u = Vertex::new(nu);
+        let v = Vertex::new(nv);
+        let expected_merge = u.merge(&v);
+        let mut merged_edges: Vec<(Vertex<usize>, &UnorderedPair<Vertex<usize>>)> = g.vertices
             .iter()
             .filter(|x| g.edges.contains_key(&UnorderedPair((x.clone().clone(), u.clone()))) && g.edges.contains_key(&UnorderedPair((x.clone().clone(), v.clone()))))
             .flat_map(|x| g.edges
@@ -331,8 +362,8 @@ mod test {
                 .filter(|(e, _w)| **e == UnorderedPair((x.clone(), u.clone())) || **e == UnorderedPair((x.clone(), v.clone())))
                 .map(|(e, w)| (x.clone(), e)))
             .collect();
-        let mut adopted_edges: Vec<(BTreeSet<usize>, &UnorderedPair<BTreeSet<usize>>)> = g.vertices
-            .difference(&HashSet::from_iter(expected_merge.clone().iter().map(|x| BTreeSet::from_iter([*x]))))
+        let mut adopted_edges: Vec<(Vertex<usize>, &UnorderedPair<Vertex<usize>>)> = g.vertices
+            .difference(&HashSet::from_iter(expected_merge.clone().into_iter().map(|x| Vertex::new(*x))))
             .filter(|x| g.edges.contains_key(&UnorderedPair((x.clone().clone(), u.clone()))) ^ g.edges.contains_key(&UnorderedPair((x.clone().clone(), v.clone()))))
             .flat_map(|x| g.edges
                 .iter()
@@ -342,16 +373,16 @@ mod test {
 
         let g0 = g.merge(&u, &v);
         let old_vertices = BTreeSet::from_iter(g.vertices.clone());
-        let remaining_vertices: HashSet<BTreeSet<usize>> = old_vertices.difference(&BTreeSet::from_iter([u.clone(), v.clone()])).map(|x| x.clone()).collect();
+        let remaining_vertices: HashSet<Vertex<usize>> = old_vertices.difference(&BTreeSet::from_iter([u.clone(), v.clone()])).map(|x| x.clone()).collect();
 
         assert!(!g0.vertices.contains(&u), "expected {:?} to not contain {:?}", g0.vertices, u);
         assert!(!g0.vertices.contains(&v), "expected {:?} to not contain {:?}", g0.vertices, v);
         assert!(g0.vertices.contains(&expected_merge));
         assert!(remaining_vertices.iter().all(|x| g0.vertices.contains(x)), "expected {:?} to contain {:?}", g0.vertices, remaining_vertices);
-        assert!(!g0.edges.contains_key(&UnorderedPair((u.clone(), v.clone()))), "expected {:?} to not contain edge {:?}", g0.edges, UnorderedPair((BTreeSet::from_iter([u.clone()]), BTreeSet::from_iter([v.clone()]))));
+        assert!(!g0.edges.contains_key(&UnorderedPair((u.clone(), v.clone()))), "expected {:?} to not contain edge {:?}", g0.edges, UnorderedPair((Vertex::new(u.clone()), Vertex::new(v.clone()))));
         assert!(merged_edges.iter().all(|(x, UnorderedPair((s, t)))| !g0.edges.contains_key(&UnorderedPair((s.clone(), t.clone())))), "expected {:?} to not contain unmerged edges from {:?}", g0.edges, merged_edges);
-        assert!(merged_edges.iter().all(|(x, _e)| g0.edges.get(&UnorderedPair((x.clone(), &u | &v))) == Some(&2)), "expected {:?} to contain merged edges from {:?}", g0.edges, merged_edges);
-        assert!(adopted_edges.iter().all(|(x, _e)| g0.edges.get(&UnorderedPair((x.clone(), &u | &v))) == Some(&1)), "expected {:?} to contain adopted edges from {:?}", g0.edges, adopted_edges);
+        assert!(merged_edges.iter().all(|(x, _e)| g0.edges.get(&UnorderedPair((x.clone(), u.merge(&v)))) == Some(&2)), "expected {:?} to contain merged edges from {:?}", g0.edges, merged_edges);
+        assert!(adopted_edges.iter().all(|(x, _e)| g0.edges.get(&UnorderedPair((x.clone(), u.merge(&v)))) == Some(&1)), "expected {:?} to contain adopted edges from {:?}", g0.edges, adopted_edges);
         quickcheck::TestResult::passed()
     }
 }
