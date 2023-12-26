@@ -4,26 +4,27 @@
 // https://www.cs.dartmouth.edu/~ac/Teach/CS105-Winter05/Handouts/stoerwagner-mincut.pdf
 use std::io;
 use std::io::prelude::*;
+use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::collections::HashSet;
 
 #[derive(Clone, Debug)]
-struct Graph<T: Clone + Eq + std::hash::Hash> {
+struct Graph<T: Clone + Eq + Ord + std::hash::Hash> {
     pub vertices: HashSet<T>,
-    pub edges: HashMap<(T, T), usize>,
+    pub edges: HashMap<UnorderedPair<T>, usize>, // TODO: consider an Rc or something here..
 }
 
-impl<T: Clone + Eq + std::hash::Hash> Graph<T> {
-    fn from_adjacency_list<I: std::iter::IntoIterator<Item = ((T, T), usize)>>(adjacency_list: I) -> Graph<T> {
+impl<T: Clone + Eq + Ord + std::hash::Hash> Graph<T> {
+    fn from_adjacency_list<I: std::iter::IntoIterator<Item = (UnorderedPair<T>, usize)>>(adjacency_list: I) -> Graph<T> {
         let mut g = Graph {
             vertices: HashSet::new(),
             edges: HashMap::new(),
         };
 
-        adjacency_list.into_iter().for_each(|((u, v), _w)| {
+        adjacency_list.into_iter().for_each(|(UnorderedPair((u, v)), _w)| {
             g.vertices.insert(u.clone());
             g.vertices.insert(v.clone());
-            g.edges.insert((u, v), 1);
+            g.edges.insert(UnorderedPair((u, v)), 1);
         });
 
         g
@@ -33,9 +34,79 @@ impl<T: Clone + Eq + std::hash::Hash> Graph<T> {
         self.vertices.difference(&scanned_vertices).max_by_key(|v| {
             self.edges
                 .iter()
-                .filter(|e| (e.0.0 == **v && scanned_vertices.contains(&e.0.1)) || (e.0.1 == **v && scanned_vertices.contains(&e.0.0)))
-                .collect::<Vec<(&(T, T), &usize)>>().len()
+                .filter(|(UnorderedPair(e), _w)| (e.0 == **v && scanned_vertices.contains(&e.1)) || (e.1 == **v && scanned_vertices.contains(&e.0)))
+                .collect::<Vec<(&UnorderedPair<T>, &usize)>>().len()
         }).cloned()
+    }
+
+    fn merge(&self, u: T, v: T) -> Graph<BTreeSet<T>> {
+        let mut g = Graph {
+            vertices: HashSet::new(),
+            edges: HashMap::<UnorderedPair<BTreeSet<T>>, usize>::new(),
+        };
+
+        self.vertices.iter().for_each(|x| {
+            if *x != u && *x != v {
+                g.vertices.insert(BTreeSet::from_iter([x.clone()]));
+            }
+        });
+        self.edges.iter().for_each(|(e@UnorderedPair((s, t)), w)| {
+            if *e != UnorderedPair((u.clone(), v.clone())) {
+                if e.contains(&u) {
+                    let x = e.partner(&u);
+                    let w0 = w + self.edges.get(&UnorderedPair((x.clone(), v.clone()))).unwrap_or(&0);
+                    g.edges.insert(UnorderedPair((BTreeSet::from_iter([u.clone(), v.clone()]), BTreeSet::from_iter([x.clone()]))), w0);
+                } else if e.contains(&v) {
+                    let x = e.partner(&v);
+                    let w0 = w + self.edges.get(&UnorderedPair((x.clone(), u.clone()))).unwrap_or(&0);
+                    g.edges.insert(UnorderedPair((BTreeSet::from_iter([u.clone(), v.clone()]), BTreeSet::from_iter([x.clone()]))), w0);
+                } else {
+                    g.edges.insert(UnorderedPair((BTreeSet::from_iter([s.clone()]), BTreeSet::from_iter([t.clone()]))), *w);
+                }
+            }
+        });
+        g.vertices.insert(BTreeSet::from_iter([u, v]));
+
+        g
+    }
+}
+
+#[derive(Clone, Debug, PartialOrd, Ord)]
+struct UnorderedPair<T: Eq>((T, T));
+
+impl<T: Eq> PartialEq for UnorderedPair<T> {
+    fn eq(&self, other: &Self) -> bool {
+        let UnorderedPair((s, t)) = self;
+        let UnorderedPair((u, v)) = other;
+
+        s == u && t == v || s == v && t == u
+    }
+}
+
+impl<T: Eq> Eq for UnorderedPair<T> { }
+
+impl<T: std::hash::Hash + Ord> std::hash::Hash for UnorderedPair<T> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        let UnorderedPair((s, t)) = self;
+        if s <= t {
+            s.hash(state);
+            t.hash(state);
+        } else {
+            t.hash(state);
+            s.hash(state);
+        }
+    }
+}
+
+impl<T: Eq> UnorderedPair<T> {
+    pub fn contains(&self, t: &T) -> bool {
+        let UnorderedPair((u, v)) = self;
+        *u == *t || *v == *t
+    }
+
+    pub fn partner(&self, t: &T) -> &T {
+        let UnorderedPair((u, v)) = self;
+        if u == t { v } else { u }
     }
 }
 
@@ -53,7 +124,7 @@ fn parse_input(input: &str) -> Result<Graph<&str>, &str> {
         g.vertices.insert(u);
         vs.split(" ").for_each(|v| {
             g.vertices.insert(v);
-            g.edges.insert((u, v), 1);
+            g.edges.insert(UnorderedPair((u, v)), 1);
         });
 
         Ok(g)
@@ -70,7 +141,7 @@ extern crate quickcheck_macros;
 mod test {
     use super::*;
 
-    const TEST_GRAPH_VERTEX_COUNT: usize = 5;
+    const TEST_GRAPH_VERTEX_COUNT: usize = 3;
 
     impl quickcheck::Arbitrary for Graph<usize> {
         fn arbitrary(gen: &mut quickcheck::Gen) -> Graph<usize> {
@@ -81,10 +152,10 @@ mod test {
                         .iter()
                         .enumerate()
                         .filter(|adjacency| *adjacency.1)
-                        .map(|adjacency| ((i, adjacency.0), 1))
-                        .collect::<Vec<((usize, usize), usize)>>()
+                        .map(|adjacency| (UnorderedPair((i, adjacency.0)), 1))
+                        .collect::<Vec<(UnorderedPair<usize>, usize)>>()
                 })
-                .collect::<Vec<((usize, usize), usize)>>())
+                .collect::<Vec<(UnorderedPair<usize>, usize)>>())
         }
     }
 
@@ -120,39 +191,39 @@ mod test {
             "rsh","rzs","xhk"
         ]);
         let expected_edges = HashMap::from_iter([
-            (("jqt", "rhn"), 1),
-            (("jqt", "xhk"), 1),
-            (("jqt", "nvd"), 1),
-            (("rsh", "frs"), 1),
-            (("rsh", "pzl"), 1),
-            (("rsh", "lsr"), 1),
-            (("xhk", "hfx"), 1),
-            (("cmg", "qnr"), 1),
-            (("cmg", "nvd"), 1),
-            (("cmg", "lhk"), 1),
-            (("cmg", "bvb"), 1),
-            (("rhn", "xhk"), 1),
-            (("rhn", "bvb"), 1),
-            (("rhn", "hfx"), 1),
-            (("bvb", "xhk"), 1),
-            (("bvb", "hfx"), 1),
-            (("pzl", "lsr"), 1),
-            (("pzl", "hfx"), 1),
-            (("pzl", "nvd"), 1),
-            (("qnr", "nvd"), 1),
-            (("ntq", "jqt"), 1),
-            (("ntq", "hfx"), 1),
-            (("ntq", "bvb"), 1),
-            (("ntq", "xhk"), 1),
-            (("nvd", "lhk"), 1),
-            (("lsr", "lhk"), 1),
-            (("rzs", "qnr"), 1),
-            (("rzs", "cmg"), 1),
-            (("rzs", "lsr"), 1),
-            (("rzs", "rsh"), 1),
-            (("frs", "qnr"), 1),
-            (("frs", "lhk"), 1),
-            (("frs", "lsr"), 1),
+            (UnorderedPair(("jqt", "rhn")), 1),
+            (UnorderedPair(("jqt", "xhk")), 1),
+            (UnorderedPair(("jqt", "nvd")), 1),
+            (UnorderedPair(("rsh", "frs")), 1),
+            (UnorderedPair(("rsh", "pzl")), 1),
+            (UnorderedPair(("rsh", "lsr")), 1),
+            (UnorderedPair(("xhk", "hfx")), 1),
+            (UnorderedPair(("cmg", "qnr")), 1),
+            (UnorderedPair(("cmg", "nvd")), 1),
+            (UnorderedPair(("cmg", "lhk")), 1),
+            (UnorderedPair(("cmg", "bvb")), 1),
+            (UnorderedPair(("rhn", "xhk")), 1),
+            (UnorderedPair(("rhn", "bvb")), 1),
+            (UnorderedPair(("rhn", "hfx")), 1),
+            (UnorderedPair(("bvb", "xhk")), 1),
+            (UnorderedPair(("bvb", "hfx")), 1),
+            (UnorderedPair(("pzl", "lsr")), 1),
+            (UnorderedPair(("pzl", "hfx")), 1),
+            (UnorderedPair(("pzl", "nvd")), 1),
+            (UnorderedPair(("qnr", "nvd")), 1),
+            (UnorderedPair(("ntq", "jqt")), 1),
+            (UnorderedPair(("ntq", "hfx")), 1),
+            (UnorderedPair(("ntq", "bvb")), 1),
+            (UnorderedPair(("ntq", "xhk")), 1),
+            (UnorderedPair(("nvd", "lhk")), 1),
+            (UnorderedPair(("lsr", "lhk")), 1),
+            (UnorderedPair(("rzs", "qnr")), 1),
+            (UnorderedPair(("rzs", "cmg")), 1),
+            (UnorderedPair(("rzs", "lsr")), 1),
+            (UnorderedPair(("rzs", "rsh")), 1),
+            (UnorderedPair(("frs", "qnr")), 1),
+            (UnorderedPair(("frs", "lhk")), 1),
+            (UnorderedPair(("frs", "lsr")), 1),
         ]);
 
         let g = parse_input(input).unwrap();
@@ -163,39 +234,39 @@ mod test {
     #[test]
     fn graphs_constructible_from_adjacency_lists() {
         let adjacency_list = HashMap::from_iter([
-            (("jqt", "rhn"), 1),
-            (("jqt", "xhk"), 1),
-            (("jqt", "nvd"), 1),
-            (("rsh", "frs"), 1),
-            (("rsh", "pzl"), 1),
-            (("rsh", "lsr"), 1),
-            (("xhk", "hfx"), 1),
-            (("cmg", "qnr"), 1),
-            (("cmg", "nvd"), 1),
-            (("cmg", "lhk"), 1),
-            (("cmg", "bvb"), 1),
-            (("rhn", "xhk"), 1),
-            (("rhn", "bvb"), 1),
-            (("rhn", "hfx"), 1),
-            (("bvb", "xhk"), 1),
-            (("bvb", "hfx"), 1),
-            (("pzl", "lsr"), 1),
-            (("pzl", "hfx"), 1),
-            (("pzl", "nvd"), 1),
-            (("qnr", "nvd"), 1),
-            (("ntq", "jqt"), 1),
-            (("ntq", "hfx"), 1),
-            (("ntq", "bvb"), 1),
-            (("ntq", "xhk"), 1),
-            (("nvd", "lhk"), 1),
-            (("lsr", "lhk"), 1),
-            (("rzs", "qnr"), 1),
-            (("rzs", "cmg"), 1),
-            (("rzs", "lsr"), 1),
-            (("rzs", "rsh"), 1),
-            (("frs", "qnr"), 1),
-            (("frs", "lhk"), 1),
-            (("frs", "lsr"), 1),
+            (UnorderedPair(("jqt", "rhn")), 1),
+            (UnorderedPair(("jqt", "xhk")), 1),
+            (UnorderedPair(("jqt", "nvd")), 1),
+            (UnorderedPair(("rsh", "frs")), 1),
+            (UnorderedPair(("rsh", "pzl")), 1),
+            (UnorderedPair(("rsh", "lsr")), 1),
+            (UnorderedPair(("xhk", "hfx")), 1),
+            (UnorderedPair(("cmg", "qnr")), 1),
+            (UnorderedPair(("cmg", "nvd")), 1),
+            (UnorderedPair(("cmg", "lhk")), 1),
+            (UnorderedPair(("cmg", "bvb")), 1),
+            (UnorderedPair(("rhn", "xhk")), 1),
+            (UnorderedPair(("rhn", "bvb")), 1),
+            (UnorderedPair(("rhn", "hfx")), 1),
+            (UnorderedPair(("bvb", "xhk")), 1),
+            (UnorderedPair(("bvb", "hfx")), 1),
+            (UnorderedPair(("pzl", "lsr")), 1),
+            (UnorderedPair(("pzl", "hfx")), 1),
+            (UnorderedPair(("pzl", "nvd")), 1),
+            (UnorderedPair(("qnr", "nvd")), 1),
+            (UnorderedPair(("ntq", "jqt")), 1),
+            (UnorderedPair(("ntq", "hfx")), 1),
+            (UnorderedPair(("ntq", "bvb")), 1),
+            (UnorderedPair(("ntq", "xhk")), 1),
+            (UnorderedPair(("nvd", "lhk")), 1),
+            (UnorderedPair(("lsr", "lhk")), 1),
+            (UnorderedPair(("rzs", "qnr")), 1),
+            (UnorderedPair(("rzs", "cmg")), 1),
+            (UnorderedPair(("rzs", "lsr")), 1),
+            (UnorderedPair(("rzs", "rsh")), 1),
+            (UnorderedPair(("frs", "qnr")), 1),
+            (UnorderedPair(("frs", "lhk")), 1),
+            (UnorderedPair(("frs", "lsr")), 1),
         ]);
         let expected_vertices = HashSet::from_iter([
             "bvb","cmg","frs","hfx",
@@ -216,7 +287,7 @@ mod test {
         }
 
         let SubsetVector(was_scanned) = previously_scanned;
-        let mut dc = g.edges.iter().fold(HashMap::<usize, usize>::new(), |mut h, ((u, v), _w)| {
+        let mut dc = g.edges.iter().fold(HashMap::<usize, usize>::new(), |mut h, (UnorderedPair((u, v)), _w)| {
             if !was_scanned[*u] && was_scanned[*v] {
                 match h.get(u) {
                     None => { h.insert(*u, 1) }
@@ -245,10 +316,39 @@ mod test {
 
     #[quickcheck]
     fn graph_can_merge_two_vertices(g: Graph<usize>, u: usize, v: usize) -> quickcheck::TestResult {
-        if u >= TEST_GRAPH_VERTEX_COUNT || v >= TEST_GRAPH_VERTEX_COUNT {
+        if u >= TEST_GRAPH_VERTEX_COUNT || v >= TEST_GRAPH_VERTEX_COUNT || u == v {
             return quickcheck::TestResult::discard();
         }
+        let expected_merge = BTreeSet::from_iter([u, v]);
+        let mut merged_edges: Vec<(usize, &UnorderedPair<usize>)> = g.vertices
+            .iter()
+            .filter(|x| g.edges.contains_key(&UnorderedPair((**x, u))) && g.edges.contains_key(&UnorderedPair((**x, v))))
+            .flat_map(|x| g.edges
+                .iter()
+                .filter(|(e, _w)| **e == UnorderedPair((*x, u)) || **e == UnorderedPair((*x, v)))
+                .map(|(e, w)| (*x, e)))
+            .collect();
+        let mut adopted_edges: Vec<(usize, &UnorderedPair<usize>)> = g.vertices
+            .difference(&HashSet::from_iter(expected_merge.iter().map(|x| *x)))
+            .filter(|x| g.edges.contains_key(&UnorderedPair((**x, u))) ^ g.edges.contains_key(&UnorderedPair((**x, v))))
+            .flat_map(|x| g.edges
+                .iter()
+                .filter(|(e, _w)| **e == UnorderedPair((*x, u)) || **e == UnorderedPair((*x, v)))
+                .map(|(e, w)| (*x, e)))
+            .collect();
 
+        let g0 = g.merge(u, v);
+        let old_vertices = BTreeSet::from_iter(g.vertices.clone());
+        let remaining_vertices: BTreeSet<&usize> = old_vertices.difference(&expected_merge).collect();
+
+        assert!(!g0.vertices.contains(&BTreeSet::from_iter([u])), "expected {:?} to not contain {:?}", g0.vertices, u);
+        assert!(!g0.vertices.contains(&BTreeSet::from_iter([v])), "expected {:?} to not contain {:?}", g0.vertices, v);
+        assert!(g0.vertices.contains(&expected_merge));
+        assert!(remaining_vertices.iter().all(|x| g0.vertices.contains(&BTreeSet::from_iter([**x]))), "expected {:?} to contain {:?}", g0.vertices, remaining_vertices);
+        assert!(!g0.edges.contains_key(&UnorderedPair((BTreeSet::from_iter([u]), BTreeSet::from_iter([v])))), "expected {:?} to not contain edge {:?}", g0.edges, UnorderedPair((BTreeSet::from_iter([u]), BTreeSet::from_iter([v]))));
+        assert!(merged_edges.iter().all(|(x, UnorderedPair((s, t)))| !g0.edges.contains_key(&UnorderedPair((BTreeSet::from_iter([*s]), BTreeSet::from_iter([*t]))))), "expected {:?} to not contain unmerged edges from {:?}", g0.edges, merged_edges);
+        assert!(merged_edges.iter().all(|(x, _e)| g0.edges.get(&UnorderedPair((BTreeSet::from_iter([*x]), BTreeSet::from_iter([u, v])))) == Some(&2)), "expected {:?} to contain merged edges from {:?}", g0.edges, merged_edges);
+        assert!(adopted_edges.iter().all(|(x, _e)| g0.edges.get(&UnorderedPair((BTreeSet::from_iter([*x]), BTreeSet::from_iter([u, v])))) == Some(&1)), "expected {:?} to contain adopted edges from {:?}", g0.edges, adopted_edges);
         quickcheck::TestResult::passed()
     }
 }
