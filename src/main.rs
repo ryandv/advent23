@@ -113,7 +113,6 @@ impl<T: Clone + Eq + Ord + std::hash::Hash> Graph<T> {
 
         while !pq.is_empty() {
             let (p, v) = pq.pop().unwrap();
-            print!("dequeued {:?} with {:?}\n", v, vertices_visited);
             if vertices_visited.contains(v) {
                 continue;
             }
@@ -133,7 +132,6 @@ impl<T: Clone + Eq + Ord + std::hash::Hash> Graph<T> {
                 }
             });
 
-            print!("visiting\n");
             visitor(v, &adjacencies);
 
             vertices_visited.insert(&v);
@@ -438,10 +436,6 @@ mod test {
             vertices_visited.insert(v.clone());
 
             if next_max.0 != None {
-                print!("visiting {:?}, maxed_adj {:?}\nadjacencies {:?}\n", v, next_max, adjacencies);
-                if !next_max.clone().0.unwrap().contains(v) {
-                    print!("\n\nfail\n\n");
-                }
                 assert!(next_max.clone().0.unwrap().contains(v));
             }
 
@@ -458,7 +452,6 @@ mod test {
         };
 
         g.maximum_adjacency_search(visitor, &Vertex::new(i));
-        print!("PASSING EXAMPLE\n");
         quickcheck::TestResult::passed()
     }
 }
