@@ -62,15 +62,6 @@ impl<T: Clone + Eq + Ord + std::hash::Hash> Graph<T> {
         g
     }
 
-    fn most_tightly_connected(&self, scanned_vertices: &HashSet<Vertex<T>>) -> Option<Vertex<T>> {
-        self.vertices.difference(&scanned_vertices).max_by_key(|v| {
-            self.edges
-                .iter()
-                .filter(|(UnorderedPair(e), _w)| (**v == e.0 && scanned_vertices.contains(&e.1)) || (**v == e.1 && scanned_vertices.contains(&e.0)))
-                .collect::<Vec<(&UnorderedPair<Vertex<T>>, &usize)>>().len()
-        }).cloned()
-    }
-
     fn merge(&self, u: &Vertex<T>, v: &Vertex<T>) -> Graph<T> {
         let mut g = Graph {
             vertices: HashSet::new(),
@@ -102,7 +93,7 @@ impl<T: Clone + Eq + Ord + std::hash::Hash> Graph<T> {
         g
     }
 
-    fn maximum_adjacency_search<F>(&self, mut visitor: F, origin: &Vertex<T>) where
+    pub fn maximum_adjacency_search<F>(&self, mut visitor: F, origin: &Vertex<T>) where
         F: FnMut(&Vertex<T>, &HashMap<&Vertex<T>, usize>),
         T: std::fmt::Debug
     {
@@ -349,6 +340,16 @@ mod test {
         assert_eq!(adjacency_list.iter().map(|(UnorderedPair((u, v)), w)| (UnorderedPair((Vertex::new(*u), Vertex::new(*v))), *w)).collect::<HashMap<UnorderedPair<Vertex<&str>>, usize>>(), g.edges);
     }
 
+    fn most_tightly_connected<T: Clone + Eq + Ord + std::hash::Hash>(g: &Graph<T>, scanned_vertices: &HashSet<Vertex<T>>) -> Option<Vertex<T>> {
+        g.vertices.difference(&scanned_vertices).max_by_key(|v| {
+            g.edges
+                .iter()
+                .filter(|(UnorderedPair(e), _w)| (**v == e.0 && scanned_vertices.contains(&e.1)) || (**v == e.1 && scanned_vertices.contains(&e.0)))
+                .collect::<Vec<(&UnorderedPair<Vertex<T>>, &usize)>>().len()
+        }).cloned()
+    }
+
+    // testing test-only code...
     #[quickcheck]
     fn finds_most_tightly_connected_vertex(g: Graph<usize>, previously_scanned: SubsetVector) -> quickcheck::TestResult {
         if g.edges.len() == 0 {
@@ -376,7 +377,7 @@ mod test {
         }
         let scanned_vertices = was_scanned.iter().enumerate().filter(|(v, scanned)| **scanned).map(|p| Vertex::new(p.0)).collect::<HashSet<Vertex<usize>>>();
 
-        let v = g.most_tightly_connected(&scanned_vertices.clone()).unwrap();
+        let v = most_tightly_connected(&g, &scanned_vertices.clone()).unwrap();
         let expected_vertex = dc.iter().max_by_key(|kv| kv.1).unwrap().0;
 
         assert!(dc.iter().all(|(_v, degree)| *degree <= *dc.get(&v).unwrap_or(&0)), "expected {:?}, got {:?} with visited vertices {:?}", expected_vertex, v, scanned_vertices);
