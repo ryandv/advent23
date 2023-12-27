@@ -158,6 +158,39 @@ impl<T: Clone + Eq + Ord + Hash> Graph<T> {
             vertices_visited.insert(&v);
         }
     }
+
+    pub fn stoer_wagner(&self, origin: &Vertex<T>) -> HashSet<Edge<T>> {
+        let mut g: Graph<T> = self.clone();
+        let mut min_cut_weight = usize::MAX;
+        let mut inducing_vertex = origin.clone();
+
+        while g.vertices.len() > 1 {
+            let mut t = origin.clone();
+            let mut s = origin.clone();
+            let mut cut_of_the_phase_weight = usize::MAX;
+
+            let visitor = |v: &Vertex<T>, adjacencies: &HashMap<&Vertex<T>, usize>| {
+                s = t.clone();
+                t = v.clone();
+                cut_of_the_phase_weight = *adjacencies.get(v).unwrap_or(&usize::MAX);
+            };
+            g.maximum_adjacency_search(visitor, origin);
+
+            if cut_of_the_phase_weight < min_cut_weight {
+                min_cut_weight = cut_of_the_phase_weight;
+                inducing_vertex = t.clone();
+            }
+
+            if s == t {
+                break;
+            }
+            g = g.merge(&s, &t);
+        }
+
+        HashSet::from_iter(self.edges.iter()
+            .filter(|(Edge(_, UnorderedPair((u, v))), _w)| inducing_vertex.0.is_superset(&u.0) ^ inducing_vertex.0.is_superset(&v.0))
+            .map(|(e, w)| e.clone()))
+    }
 }
 
 #[derive(Clone, Debug, PartialOrd, Ord)]
@@ -430,6 +463,7 @@ mod test {
         let u = Vertex::new(iu);
         let v = Vertex::new(iv);
         let expected_merge = u.merge(&v);
+
         let mut merged_edges: Vec<(Vertex<usize>, &Edge<usize>)> = g.vertices
             .iter()
             .filter(|x| g.edges.contains_key(&Edge::new(0, x.clone().clone(), u.clone())) && g.edges.contains_key(&Edge::new(0, x.clone().clone(), v.clone())))
@@ -451,6 +485,7 @@ mod test {
         let old_vertices = BTreeSet::from_iter(g.vertices.clone());
         let remaining_vertices: HashSet<Vertex<usize>> = old_vertices.difference(&BTreeSet::from_iter([u.clone(), v.clone()])).map(|x| x.clone()).collect();
 
+        // TODO: strengthen assertions on edge IDs
         assert!(!g0.vertices.contains(&u), "expected {:?} to not contain {:?}", g0.vertices, u);
         assert!(!g0.vertices.contains(&v), "expected {:?} to not contain {:?}", g0.vertices, v);
         assert!(g0.vertices.contains(&expected_merge));
@@ -493,15 +528,34 @@ mod test {
         quickcheck::TestResult::passed()
     }
 
-    /*
     #[quickcheck]
     fn stoer_wagner_finds_a_cut(g: Graph<usize>, i: usize) -> quickcheck::TestResult {
-        if i >= TEST_GRAPH_VERTEX_COUNT {
+        if !g.vertices.contains(&Vertex::new(i)) || g.vertices.len() < 2 {
             return quickcheck::TestResult::discard();
         }
 
-        let cut: HashSet<UnorderedPair<Vertex<T>>> = g.stoer_wagner(i);
+        let cut: HashSet<Edge<usize>> = g.stoer_wagner(&Vertex::new(i));
+        eprint!("cut: {:?}\n", cut);
+        let mut severed_graph = Graph::from_adjacency_lists(HashSet::<(Edge<usize>, usize)>::from_iter(g.edges.iter().map(|(e, w)| (e.clone(), *w))).difference(&cut.iter().map(|e| (e.clone(), 1)).collect()).map(|x| x.clone()).collect::<HashSet<(Edge<usize>, usize)>>());
+        severed_graph.vertices.extend(g.vertices.difference(&severed_graph.vertices.clone()).map(|v| v.clone()));
+        eprint!("g: {:?}\n, g': {:?}\n", g, severed_graph);
+
+        let mut num_components = 0;
+        let mut vertices_visited = HashMap::<Vertex<usize>, bool>::from_iter(severed_graph.vertices.iter().map(|v| (v.clone(), false)));
+        //vertices_visited.extend(g.vertices.difference(&severed_graph.vertices).map(|v| (v.clone(), false)));
+
+        while vertices_visited.values().any(|v| !*v) {
+            let origin = vertices_visited.iter().find(|(u, v)| !*v).unwrap().0.clone();
+            vertices_visited.insert(origin.clone(), true);
+
+            let visitor = |v: &Vertex<usize>, adjacencies: &HashMap<&Vertex<usize>, usize>| {
+                vertices_visited.insert(v.clone(), true);
+            };
+            severed_graph.maximum_adjacency_search(visitor, &origin);
+            num_components += 1;
+        }
+
+        assert_eq!(2, num_components);
         quickcheck::TestResult::passed()
     }
-    */
 }
