@@ -3,27 +3,28 @@
 // Stoer-Wagner algorithm over graphs with constant weight 1
 // https://www.cs.dartmouth.edu/~ac/Teach/CS105-Winter05/Handouts/stoerwagner-mincut.pdf
 
-use std::io;
-use std::io::prelude::*;
-
 use std::collections::BinaryHeap;
 use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::collections::HashSet;
 
+use std::io;
+use std::io::prelude::*;
+
+use std::hash::{Hash, Hasher};
 use std::ops::FnMut;
 use std::rc::Rc;
 
 #[derive(Clone, Debug)]
-struct Graph<T: Clone + Eq + Ord + std::hash::Hash> {
+struct Graph<T: Clone + Eq + Ord + Hash> {
     pub vertices: HashSet<Vertex<T>>,
-    pub edges: HashMap<UnorderedPair<Vertex<T>>, usize>,
+    pub edges: HashMap<Edge<T>, usize>,
 }
 
-#[derive(PartialEq, Eq, Clone, Debug, std::hash::Hash, Ord, PartialOrd)]
-struct Vertex<T: Clone + Eq + Ord + std::hash::Hash>(BTreeSet<Rc<T>>);
+#[derive(PartialEq, Eq, Clone, Debug, Hash, Ord, PartialOrd)]
+struct Vertex<T: Clone + Eq + Ord + Hash>(BTreeSet<Rc<T>>);
 
-impl<T: Clone + Eq + Ord + std::hash::Hash> Vertex<T> {
+impl<T: Clone + Eq + Ord + Hash> Vertex<T> {
     pub fn new(t: T) -> Vertex<T> {
         Vertex(BTreeSet::from([Rc::new(t)]))
     }
@@ -35,7 +36,7 @@ impl<T: Clone + Eq + Ord + std::hash::Hash> Vertex<T> {
     }
 }
 
-impl<T: Clone + Eq + Ord + std::hash::Hash> IntoIterator for Vertex<T> {
+impl<T: Clone + Eq + Ord + Hash> IntoIterator for Vertex<T> {
     type Item = Rc<T>;
     type IntoIter = <std::collections::BTreeSet<Rc<T>> as IntoIterator>::IntoIter;
 
@@ -44,19 +45,35 @@ impl<T: Clone + Eq + Ord + std::hash::Hash> IntoIterator for Vertex<T> {
     }
 }
 
-impl<T: Clone + Eq + Ord + std::hash::Hash> Graph<T> {
-    pub fn from_adjacency_lists<I: std::iter::IntoIterator<Item = (UnorderedPair<T>, usize)>>(adjacency_list: I) -> Graph<T> {
+#[derive(PartialEq, Eq, Clone, Debug, Hash, Ord, PartialOrd)]
+struct Edge<T: Clone + Eq + Ord + Hash>(UnorderedPair<Vertex<T>>);
+
+impl<T: Clone + Eq + Ord + Hash> Edge<T> {
+    pub fn new(u: Vertex<T>, v: Vertex<T>) -> Edge<T> {
+        Edge(UnorderedPair((u, v)))
+    }
+
+    pub fn partner(&self, v: &Vertex<T>) -> &Vertex<T> {
+        self.0.partner(v)
+    }
+
+    pub fn joins(&self, v: &Vertex<T>) -> bool {
+        self.0.contains(v)
+    }
+
+}
+
+impl<T: Clone + Eq + Ord + Hash> Graph<T> {
+    pub fn from_adjacency_lists<I: std::iter::IntoIterator<Item = (Edge<T>, usize)>>(adjacency_list: I) -> Graph<T> {
         let mut g = Graph {
             vertices: HashSet::new(),
             edges: HashMap::new(),
         };
 
-        adjacency_list.into_iter().for_each(|(UnorderedPair((u, v)), _w)| {
-            let vu = Vertex::new(u);
-            let vv = Vertex::new(v);
-            g.vertices.insert(vu.clone());
-            g.vertices.insert(vv.clone());
-            g.edges.insert(UnorderedPair((vu, vv)), 1);
+        adjacency_list.into_iter().for_each(|(Edge(UnorderedPair((u, v))), _w)| {
+            g.vertices.insert(u.clone());
+            g.vertices.insert(v.clone());
+            g.edges.insert(Edge::new(u, v), 1);
         });
 
         g
@@ -65,7 +82,7 @@ impl<T: Clone + Eq + Ord + std::hash::Hash> Graph<T> {
     fn merge(&self, u: &Vertex<T>, v: &Vertex<T>) -> Graph<T> {
         let mut g = Graph {
             vertices: HashSet::new(),
-            edges: HashMap::<UnorderedPair<Vertex<T>>, usize>::new(),
+            edges: HashMap::<Edge<T>, usize>::new(),
         };
 
         self.vertices.iter().for_each(|x| {
@@ -73,18 +90,18 @@ impl<T: Clone + Eq + Ord + std::hash::Hash> Graph<T> {
                 g.vertices.insert(x.clone());
             }
         });
-        self.edges.iter().for_each(|(e@UnorderedPair((s, t)), w)| {
-            if *e != UnorderedPair((u.clone(), v.clone())) {
-                if e.contains(&u) {
+        self.edges.iter().for_each(|(e@Edge(UnorderedPair((s, t))), w)| {
+            if *e != Edge::new(u.clone(), v.clone()) {
+                if e.joins(&u) {
                     let x = e.partner(&u);
-                    let w0 = w + self.edges.get(&UnorderedPair((x.clone(), v.clone()))).unwrap_or(&0);
-                    g.edges.insert(UnorderedPair((u.merge(v), x.clone())), w0);
-                } else if e.contains(&v) {
+                    let w0 = w + self.edges.get(&Edge::new(x.clone(), v.clone())).unwrap_or(&0);
+                    g.edges.insert(Edge::new(u.merge(v), x.clone()), w0);
+                } else if e.joins(&v) {
                     let x = e.partner(&v);
-                    let w0 = w + self.edges.get(&UnorderedPair((x.clone(), u.clone()))).unwrap_or(&0);
-                    g.edges.insert(UnorderedPair((u.merge(v), x.clone())), w0);
+                    let w0 = w + self.edges.get(&Edge::new(x.clone(), u.clone())).unwrap_or(&0);
+                    g.edges.insert(Edge::new(u.merge(v), x.clone()), w0);
                 } else {
-                    g.edges.insert(UnorderedPair((s.clone(), t.clone())), *w);
+                    g.edges.insert(Edge::new(s.clone(), t.clone()), *w);
                 }
             }
         });
@@ -95,7 +112,6 @@ impl<T: Clone + Eq + Ord + std::hash::Hash> Graph<T> {
 
     pub fn maximum_adjacency_search<F>(&self, mut visitor: F, origin: &Vertex<T>) where
         F: FnMut(&Vertex<T>, &HashMap<&Vertex<T>, usize>),
-        T: std::fmt::Debug
     {
         let mut pq: BinaryHeap<(usize, &Vertex<T>)> = BinaryHeap::new();
         let mut vertices_visited: HashSet<&Vertex<T>> = HashSet::new();
@@ -108,7 +124,7 @@ impl<T: Clone + Eq + Ord + std::hash::Hash> Graph<T> {
                 continue;
             }
 
-            self.edges.iter().filter(|(e, _w)| e.contains(v)).for_each(|(e, w)| {
+            self.edges.iter().filter(|(e, _w)| e.joins(v)).for_each(|(e, w)| {
                 let u = e.partner(&v);
                 match adjacencies.get(&u) {
                     None => {
@@ -144,8 +160,8 @@ impl<T: Eq> PartialEq for UnorderedPair<T> {
 
 impl<T: Eq> Eq for UnorderedPair<T> { }
 
-impl<T: std::hash::Hash + Ord> std::hash::Hash for UnorderedPair<T> {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+impl<T: Hash + Ord> Hash for UnorderedPair<T> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
         let UnorderedPair((s, t)) = self;
         if s <= t {
             s.hash(state);
@@ -183,7 +199,7 @@ fn parse_input(input: &str) -> Result<Graph<&str>, &str> {
         g.vertices.insert(Vertex::new(u));
         vs.split(" ").for_each(|v| {
             g.vertices.insert(Vertex::new(v));
-            g.edges.insert(UnorderedPair((Vertex::new(u), Vertex::new(v))), 1);
+            g.edges.insert(Edge::new(Vertex::new(u), Vertex::new(v)), 1);
         });
 
         Ok(g)
@@ -212,10 +228,10 @@ mod test {
                         .iter()
                         .enumerate()
                         .filter(|adjacency| *adjacency.1)
-                        .map(|adjacency| (UnorderedPair((i, adjacency.0)), 1))
-                        .collect::<Vec<(UnorderedPair<usize>, usize)>>()
+                        .map(|adjacency| (Edge::new(Vertex::new(i), Vertex::new(adjacency.0)), 1))
+                        .collect::<Vec<(Edge<usize>, usize)>>()
                 })
-                .collect::<Vec<(UnorderedPair<usize>, usize)>>())
+                .collect::<Vec<(Edge<usize>, usize)>>())
         }
     }
 
@@ -251,39 +267,39 @@ mod test {
             Vertex::new("rsh"),Vertex::new("rzs"),Vertex::new("xhk")
         ]);
         let expected_edges = HashMap::from_iter([
-            (UnorderedPair((Vertex::new("jqt"), Vertex::new("rhn"))), 1),
-            (UnorderedPair((Vertex::new("jqt"), Vertex::new("xhk"))), 1),
-            (UnorderedPair((Vertex::new("jqt"), Vertex::new("nvd"))), 1),
-            (UnorderedPair((Vertex::new("rsh"), Vertex::new("frs"))), 1),
-            (UnorderedPair((Vertex::new("rsh"), Vertex::new("pzl"))), 1),
-            (UnorderedPair((Vertex::new("rsh"), Vertex::new("lsr"))), 1),
-            (UnorderedPair((Vertex::new("xhk"), Vertex::new("hfx"))), 1),
-            (UnorderedPair((Vertex::new("cmg"), Vertex::new("qnr"))), 1),
-            (UnorderedPair((Vertex::new("cmg"), Vertex::new("nvd"))), 1),
-            (UnorderedPair((Vertex::new("cmg"), Vertex::new("lhk"))), 1),
-            (UnorderedPair((Vertex::new("cmg"), Vertex::new("bvb"))), 1),
-            (UnorderedPair((Vertex::new("rhn"), Vertex::new("xhk"))), 1),
-            (UnorderedPair((Vertex::new("rhn"), Vertex::new("bvb"))), 1),
-            (UnorderedPair((Vertex::new("rhn"), Vertex::new("hfx"))), 1),
-            (UnorderedPair((Vertex::new("bvb"), Vertex::new("xhk"))), 1),
-            (UnorderedPair((Vertex::new("bvb"), Vertex::new("hfx"))), 1),
-            (UnorderedPair((Vertex::new("pzl"), Vertex::new("lsr"))), 1),
-            (UnorderedPair((Vertex::new("pzl"), Vertex::new("hfx"))), 1),
-            (UnorderedPair((Vertex::new("pzl"), Vertex::new("nvd"))), 1),
-            (UnorderedPair((Vertex::new("qnr"), Vertex::new("nvd"))), 1),
-            (UnorderedPair((Vertex::new("ntq"), Vertex::new("jqt"))), 1),
-            (UnorderedPair((Vertex::new("ntq"), Vertex::new("hfx"))), 1),
-            (UnorderedPair((Vertex::new("ntq"), Vertex::new("bvb"))), 1),
-            (UnorderedPair((Vertex::new("ntq"), Vertex::new("xhk"))), 1),
-            (UnorderedPair((Vertex::new("nvd"), Vertex::new("lhk"))), 1),
-            (UnorderedPair((Vertex::new("lsr"), Vertex::new("lhk"))), 1),
-            (UnorderedPair((Vertex::new("rzs"), Vertex::new("qnr"))), 1),
-            (UnorderedPair((Vertex::new("rzs"), Vertex::new("cmg"))), 1),
-            (UnorderedPair((Vertex::new("rzs"), Vertex::new("lsr"))), 1),
-            (UnorderedPair((Vertex::new("rzs"), Vertex::new("rsh"))), 1),
-            (UnorderedPair((Vertex::new("frs"), Vertex::new("qnr"))), 1),
-            (UnorderedPair((Vertex::new("frs"), Vertex::new("lhk"))), 1),
-            (UnorderedPair((Vertex::new("frs"), Vertex::new("lsr"))), 1),
+            (Edge::new(Vertex::new("jqt"), Vertex::new("rhn")), 1),
+            (Edge::new(Vertex::new("jqt"), Vertex::new("xhk")), 1),
+            (Edge::new(Vertex::new("jqt"), Vertex::new("nvd")), 1),
+            (Edge::new(Vertex::new("rsh"), Vertex::new("frs")), 1),
+            (Edge::new(Vertex::new("rsh"), Vertex::new("pzl")), 1),
+            (Edge::new(Vertex::new("rsh"), Vertex::new("lsr")), 1),
+            (Edge::new(Vertex::new("xhk"), Vertex::new("hfx")), 1),
+            (Edge::new(Vertex::new("cmg"), Vertex::new("qnr")), 1),
+            (Edge::new(Vertex::new("cmg"), Vertex::new("nvd")), 1),
+            (Edge::new(Vertex::new("cmg"), Vertex::new("lhk")), 1),
+            (Edge::new(Vertex::new("cmg"), Vertex::new("bvb")), 1),
+            (Edge::new(Vertex::new("rhn"), Vertex::new("xhk")), 1),
+            (Edge::new(Vertex::new("rhn"), Vertex::new("bvb")), 1),
+            (Edge::new(Vertex::new("rhn"), Vertex::new("hfx")), 1),
+            (Edge::new(Vertex::new("bvb"), Vertex::new("xhk")), 1),
+            (Edge::new(Vertex::new("bvb"), Vertex::new("hfx")), 1),
+            (Edge::new(Vertex::new("pzl"), Vertex::new("lsr")), 1),
+            (Edge::new(Vertex::new("pzl"), Vertex::new("hfx")), 1),
+            (Edge::new(Vertex::new("pzl"), Vertex::new("nvd")), 1),
+            (Edge::new(Vertex::new("qnr"), Vertex::new("nvd")), 1),
+            (Edge::new(Vertex::new("ntq"), Vertex::new("jqt")), 1),
+            (Edge::new(Vertex::new("ntq"), Vertex::new("hfx")), 1),
+            (Edge::new(Vertex::new("ntq"), Vertex::new("bvb")), 1),
+            (Edge::new(Vertex::new("ntq"), Vertex::new("xhk")), 1),
+            (Edge::new(Vertex::new("nvd"), Vertex::new("lhk")), 1),
+            (Edge::new(Vertex::new("lsr"), Vertex::new("lhk")), 1),
+            (Edge::new(Vertex::new("rzs"), Vertex::new("qnr")), 1),
+            (Edge::new(Vertex::new("rzs"), Vertex::new("cmg")), 1),
+            (Edge::new(Vertex::new("rzs"), Vertex::new("lsr")), 1),
+            (Edge::new(Vertex::new("rzs"), Vertex::new("rsh")), 1),
+            (Edge::new(Vertex::new("frs"), Vertex::new("qnr")), 1),
+            (Edge::new(Vertex::new("frs"), Vertex::new("lhk")), 1),
+            (Edge::new(Vertex::new("frs"), Vertex::new("lsr")), 1),
         ]);
 
         let g = parse_input(input).unwrap();
@@ -293,40 +309,40 @@ mod test {
 
     #[test]
     fn graphs_constructible_from_adjacency_lists() {
-        let adjacency_list: HashMap<UnorderedPair<&str>, usize> = HashMap::from_iter([
-            (UnorderedPair(("jqt", "rhn")), 1),
-            (UnorderedPair(("jqt", "xhk")), 1),
-            (UnorderedPair(("jqt", "nvd")), 1),
-            (UnorderedPair(("rsh", "frs")), 1),
-            (UnorderedPair(("rsh", "pzl")), 1),
-            (UnorderedPair(("rsh", "lsr")), 1),
-            (UnorderedPair(("xhk", "hfx")), 1),
-            (UnorderedPair(("cmg", "qnr")), 1),
-            (UnorderedPair(("cmg", "nvd")), 1),
-            (UnorderedPair(("cmg", "lhk")), 1),
-            (UnorderedPair(("cmg", "bvb")), 1),
-            (UnorderedPair(("rhn", "xhk")), 1),
-            (UnorderedPair(("rhn", "bvb")), 1),
-            (UnorderedPair(("rhn", "hfx")), 1),
-            (UnorderedPair(("bvb", "xhk")), 1),
-            (UnorderedPair(("bvb", "hfx")), 1),
-            (UnorderedPair(("pzl", "lsr")), 1),
-            (UnorderedPair(("pzl", "hfx")), 1),
-            (UnorderedPair(("pzl", "nvd")), 1),
-            (UnorderedPair(("qnr", "nvd")), 1),
-            (UnorderedPair(("ntq", "jqt")), 1),
-            (UnorderedPair(("ntq", "hfx")), 1),
-            (UnorderedPair(("ntq", "bvb")), 1),
-            (UnorderedPair(("ntq", "xhk")), 1),
-            (UnorderedPair(("nvd", "lhk")), 1),
-            (UnorderedPair(("lsr", "lhk")), 1),
-            (UnorderedPair(("rzs", "qnr")), 1),
-            (UnorderedPair(("rzs", "cmg")), 1),
-            (UnorderedPair(("rzs", "lsr")), 1),
-            (UnorderedPair(("rzs", "rsh")), 1),
-            (UnorderedPair(("frs", "qnr")), 1),
-            (UnorderedPair(("frs", "lhk")), 1),
-            (UnorderedPair(("frs", "lsr")), 1),
+        let adjacency_list: HashMap<Edge<&str>, usize> = HashMap::from_iter([
+            (Edge::new(Vertex::new("jqt"), Vertex::new("rhn")), 1),
+            (Edge::new(Vertex::new("jqt"), Vertex::new("xhk")), 1),
+            (Edge::new(Vertex::new("jqt"), Vertex::new("nvd")), 1),
+            (Edge::new(Vertex::new("rsh"), Vertex::new("frs")), 1),
+            (Edge::new(Vertex::new("rsh"), Vertex::new("pzl")), 1),
+            (Edge::new(Vertex::new("rsh"), Vertex::new("lsr")), 1),
+            (Edge::new(Vertex::new("xhk"), Vertex::new("hfx")), 1),
+            (Edge::new(Vertex::new("cmg"), Vertex::new("qnr")), 1),
+            (Edge::new(Vertex::new("cmg"), Vertex::new("nvd")), 1),
+            (Edge::new(Vertex::new("cmg"), Vertex::new("lhk")), 1),
+            (Edge::new(Vertex::new("cmg"), Vertex::new("bvb")), 1),
+            (Edge::new(Vertex::new("rhn"), Vertex::new("xhk")), 1),
+            (Edge::new(Vertex::new("rhn"), Vertex::new("bvb")), 1),
+            (Edge::new(Vertex::new("rhn"), Vertex::new("hfx")), 1),
+            (Edge::new(Vertex::new("bvb"), Vertex::new("xhk")), 1),
+            (Edge::new(Vertex::new("bvb"), Vertex::new("hfx")), 1),
+            (Edge::new(Vertex::new("pzl"), Vertex::new("lsr")), 1),
+            (Edge::new(Vertex::new("pzl"), Vertex::new("hfx")), 1),
+            (Edge::new(Vertex::new("pzl"), Vertex::new("nvd")), 1),
+            (Edge::new(Vertex::new("qnr"), Vertex::new("nvd")), 1),
+            (Edge::new(Vertex::new("ntq"), Vertex::new("jqt")), 1),
+            (Edge::new(Vertex::new("ntq"), Vertex::new("hfx")), 1),
+            (Edge::new(Vertex::new("ntq"), Vertex::new("bvb")), 1),
+            (Edge::new(Vertex::new("ntq"), Vertex::new("xhk")), 1),
+            (Edge::new(Vertex::new("nvd"), Vertex::new("lhk")), 1),
+            (Edge::new(Vertex::new("lsr"), Vertex::new("lhk")), 1),
+            (Edge::new(Vertex::new("rzs"), Vertex::new("qnr")), 1),
+            (Edge::new(Vertex::new("rzs"), Vertex::new("cmg")), 1),
+            (Edge::new(Vertex::new("rzs"), Vertex::new("lsr")), 1),
+            (Edge::new(Vertex::new("rzs"), Vertex::new("rsh")), 1),
+            (Edge::new(Vertex::new("frs"), Vertex::new("qnr")), 1),
+            (Edge::new(Vertex::new("frs"), Vertex::new("lhk")), 1),
+            (Edge::new(Vertex::new("frs"), Vertex::new("lsr")), 1),
         ]);
         let expected_vertices = HashSet::from_iter([
             Vertex::new("bvb"),Vertex::new("cmg"),Vertex::new("frs"),Vertex::new("hfx"),
@@ -337,15 +353,15 @@ mod test {
 
         let g = Graph::from_adjacency_lists(adjacency_list.clone());
         assert_eq!(expected_vertices, g.vertices);
-        assert_eq!(adjacency_list.iter().map(|(UnorderedPair((u, v)), w)| (UnorderedPair((Vertex::new(*u), Vertex::new(*v))), *w)).collect::<HashMap<UnorderedPair<Vertex<&str>>, usize>>(), g.edges);
+        assert_eq!(adjacency_list, g.edges);
     }
 
-    fn most_tightly_connected<T: Clone + Eq + Ord + std::hash::Hash>(g: &Graph<T>, scanned_vertices: &HashSet<Vertex<T>>) -> Option<Vertex<T>> {
+    fn most_tightly_connected<T: Clone + Eq + Ord + Hash>(g: &Graph<T>, scanned_vertices: &HashSet<Vertex<T>>) -> Option<Vertex<T>> {
         g.vertices.difference(&scanned_vertices).max_by_key(|v| {
             g.edges
                 .iter()
-                .filter(|(UnorderedPair(e), _w)| (**v == e.0 && scanned_vertices.contains(&e.1)) || (**v == e.1 && scanned_vertices.contains(&e.0)))
-                .collect::<Vec<(&UnorderedPair<Vertex<T>>, &usize)>>().len()
+                .filter(|(Edge(UnorderedPair(e)), _w)| (**v == e.0 && scanned_vertices.contains(&e.1)) || (**v == e.1 && scanned_vertices.contains(&e.0)))
+                .collect::<Vec<(&Edge<T>, &usize)>>().len()
         }).cloned()
     }
 
@@ -357,7 +373,7 @@ mod test {
         }
 
         let SubsetVector(was_scanned) = previously_scanned;
-        let mut dc = g.edges.iter().fold(HashMap::<Vertex<usize>, usize>::new(), |mut h, (UnorderedPair((u, v)), _w)| {
+        let mut dc = g.edges.iter().fold(HashMap::<Vertex<usize>, usize>::new(), |mut h, (Edge(UnorderedPair((u, v))), _w)| {
             // all vertices are singleton sets by construction
             if !was_scanned[*u.0.first().unwrap().deref()] && was_scanned[*v.0.first().unwrap().deref()] {
                 match h.get(u) {
@@ -393,20 +409,20 @@ mod test {
         let u = Vertex::new(iu);
         let v = Vertex::new(iv);
         let expected_merge = u.merge(&v);
-        let mut merged_edges: Vec<(Vertex<usize>, &UnorderedPair<Vertex<usize>>)> = g.vertices
+        let mut merged_edges: Vec<(Vertex<usize>, &Edge<usize>)> = g.vertices
             .iter()
-            .filter(|x| g.edges.contains_key(&UnorderedPair((x.clone().clone(), u.clone()))) && g.edges.contains_key(&UnorderedPair((x.clone().clone(), v.clone()))))
+            .filter(|x| g.edges.contains_key(&Edge::new(x.clone().clone(), u.clone())) && g.edges.contains_key(&Edge::new(x.clone().clone(), v.clone())))
             .flat_map(|x| g.edges
                 .iter()
-                .filter(|(e, _w)| **e == UnorderedPair((x.clone(), u.clone())) || **e == UnorderedPair((x.clone(), v.clone())))
+                .filter(|(e, _w)| **e == Edge::new(x.clone(), u.clone()) || **e == Edge::new(x.clone(), v.clone()))
                 .map(|(e, w)| (x.clone(), e)))
             .collect();
-        let mut adopted_edges: Vec<(Vertex<usize>, &UnorderedPair<Vertex<usize>>)> = g.vertices
+        let mut adopted_edges: Vec<(Vertex<usize>, &Edge<usize>)> = g.vertices
             .difference(&HashSet::from_iter(expected_merge.clone().into_iter().map(|x| Vertex::new(*x))))
-            .filter(|x| g.edges.contains_key(&UnorderedPair((x.clone().clone(), u.clone()))) ^ g.edges.contains_key(&UnorderedPair((x.clone().clone(), v.clone()))))
+            .filter(|x| g.edges.contains_key(&Edge::new(x.clone().clone(), u.clone())) ^ g.edges.contains_key(&Edge::new(x.clone().clone(), v.clone())))
             .flat_map(|x| g.edges
                 .iter()
-                .filter(|(e, _w)| **e == UnorderedPair((x.clone(), u.clone())) || **e == UnorderedPair((x.clone(), v.clone())))
+                .filter(|(e, _w)| **e == Edge::new(x.clone(), u.clone()) || **e == Edge::new(x.clone(), v.clone()))
                 .map(|(e, w)| (x.clone(), e)))
             .collect();
 
@@ -418,10 +434,10 @@ mod test {
         assert!(!g0.vertices.contains(&v), "expected {:?} to not contain {:?}", g0.vertices, v);
         assert!(g0.vertices.contains(&expected_merge));
         assert!(remaining_vertices.iter().all(|x| g0.vertices.contains(x)), "expected {:?} to contain {:?}", g0.vertices, remaining_vertices);
-        assert!(!g0.edges.contains_key(&UnorderedPair((u.clone(), v.clone()))), "expected {:?} to not contain edge {:?}", g0.edges, UnorderedPair((Vertex::new(u.clone()), Vertex::new(v.clone()))));
-        assert!(merged_edges.iter().all(|(x, UnorderedPair((s, t)))| !g0.edges.contains_key(&UnorderedPair((s.clone(), t.clone())))), "expected {:?} to not contain unmerged edges from {:?}", g0.edges, merged_edges);
-        assert!(merged_edges.iter().all(|(x, _e)| g0.edges.get(&UnorderedPair((x.clone(), u.merge(&v)))) == Some(&2)), "expected {:?} to contain merged edges from {:?}", g0.edges, merged_edges);
-        assert!(adopted_edges.iter().all(|(x, _e)| g0.edges.get(&UnorderedPair((x.clone(), u.merge(&v)))) == Some(&1)), "expected {:?} to contain adopted edges from {:?}", g0.edges, adopted_edges);
+        assert!(!g0.edges.contains_key(&Edge::new(u.clone(), v.clone())), "expected {:?} to not contain edge {:?}", g0.edges, Edge::new(Vertex::new(u.clone()), Vertex::new(v.clone())));
+        assert!(merged_edges.iter().all(|(x, e)| !g0.edges.contains_key(e)), "expected {:?} to not contain unmerged edges from {:?}", g0.edges, merged_edges);
+        assert!(merged_edges.iter().all(|(x, _e)| g0.edges.get(&Edge::new(x.clone(), u.merge(&v))) == Some(&2)), "expected {:?} to contain merged edges from {:?}", g0.edges, merged_edges);
+        assert!(adopted_edges.iter().all(|(x, _e)| g0.edges.get(&Edge::new(x.clone(), u.merge(&v))) == Some(&1)), "expected {:?} to contain adopted edges from {:?}", g0.edges, adopted_edges);
         quickcheck::TestResult::passed()
     }
 
@@ -455,4 +471,16 @@ mod test {
         g.maximum_adjacency_search(visitor, &Vertex::new(i));
         quickcheck::TestResult::passed()
     }
+
+    /*
+    #[quickcheck]
+    fn stoer_wagner_finds_a_cut(g: Graph<usize>, i: usize) -> quickcheck::TestResult {
+        if i >= TEST_GRAPH_VERTEX_COUNT {
+            return quickcheck::TestResult::discard();
+        }
+
+        let cut: HashSet<UnorderedPair<Vertex<T>>> = g.stoer_wagner(i);
+        quickcheck::TestResult::passed()
+    }
+    */
 }
