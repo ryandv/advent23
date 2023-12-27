@@ -535,14 +535,11 @@ mod test {
         }
 
         let cut: HashSet<Edge<usize>> = g.stoer_wagner(&Vertex::new(i));
-        eprint!("cut: {:?}\n", cut);
         let mut severed_graph = Graph::from_adjacency_lists(HashSet::<(Edge<usize>, usize)>::from_iter(g.edges.iter().map(|(e, w)| (e.clone(), *w))).difference(&cut.iter().map(|e| (e.clone(), 1)).collect()).map(|x| x.clone()).collect::<HashSet<(Edge<usize>, usize)>>());
         severed_graph.vertices.extend(g.vertices.difference(&severed_graph.vertices.clone()).map(|v| v.clone()));
-        eprint!("g: {:?}\n, g': {:?}\n", g, severed_graph);
 
         let mut num_components = 0;
         let mut vertices_visited = HashMap::<Vertex<usize>, bool>::from_iter(severed_graph.vertices.iter().map(|v| (v.clone(), false)));
-        //vertices_visited.extend(g.vertices.difference(&severed_graph.vertices).map(|v| (v.clone(), false)));
 
         while vertices_visited.values().any(|v| !*v) {
             let origin = vertices_visited.iter().find(|(u, v)| !*v).unwrap().0.clone();
