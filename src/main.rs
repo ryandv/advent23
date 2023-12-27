@@ -6,10 +6,12 @@
 use std::io;
 use std::io::prelude::*;
 
+use std::collections::BinaryHeap;
 use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::collections::HashSet;
 
+use std::ops::FnMut;
 use std::rc::Rc;
 
 #[derive(Clone, Debug)]
@@ -60,7 +62,7 @@ impl<T: Clone + Eq + Ord + std::hash::Hash> Graph<T> {
         g
     }
 
-    fn most_tightly_connected(&self, scanned_vertices: HashSet<Vertex<T>>) -> Option<Vertex<T>> {
+    fn most_tightly_connected(&self, scanned_vertices: &HashSet<Vertex<T>>) -> Option<Vertex<T>> {
         self.vertices.difference(&scanned_vertices).max_by_key(|v| {
             self.edges
                 .iter()
@@ -98,6 +100,44 @@ impl<T: Clone + Eq + Ord + std::hash::Hash> Graph<T> {
         g.vertices.insert(u.merge(v));
 
         g
+    }
+
+    fn maximum_adjacency_search<F>(&self, mut visitor: F, origin: &Vertex<T>) where
+        F: FnMut(&Vertex<T>, &HashMap<&Vertex<T>, usize>),
+        T: std::fmt::Debug
+    {
+        let mut pq: BinaryHeap<(usize, &Vertex<T>)> = BinaryHeap::new();
+        let mut vertices_visited: HashSet<&Vertex<T>> = HashSet::new();
+        let mut adjacencies: HashMap<&Vertex<T>, usize> = HashMap::new();
+        pq.push((usize::MAX, origin));
+
+        while !pq.is_empty() {
+            let (p, v) = pq.pop().unwrap();
+            print!("dequeued {:?} with {:?}\n", v, vertices_visited);
+            if vertices_visited.contains(v) {
+                continue;
+            }
+
+            self.edges.iter().filter(|(e, _w)| e.contains(v)).for_each(|(e, w)| {
+                let u = e.partner(&v);
+                match adjacencies.get(&u) {
+                    None => {
+                        adjacencies.insert(u, *w);
+                        pq.push((*w, u));
+                    },
+                    Some(w_prev) => {
+                        let w_next = w_prev + *w;
+                        adjacencies.insert(u, w_next);
+                        pq.push((w_next, u));
+                    }
+                }
+            });
+
+            print!("visiting\n");
+            visitor(v, &adjacencies);
+
+            vertices_visited.insert(&v);
+        }
     }
 }
 
@@ -172,7 +212,7 @@ mod test {
     use std::ops::Deref;
     use super::*;
 
-    const TEST_GRAPH_VERTEX_COUNT: usize = 3;
+    const TEST_GRAPH_VERTEX_COUNT: usize = 50;
 
     impl quickcheck::Arbitrary for Graph<usize> {
         fn arbitrary(gen: &mut quickcheck::Gen) -> Graph<usize> {
@@ -338,7 +378,7 @@ mod test {
         }
         let scanned_vertices = was_scanned.iter().enumerate().filter(|(v, scanned)| **scanned).map(|p| Vertex::new(p.0)).collect::<HashSet<Vertex<usize>>>();
 
-        let v = g.most_tightly_connected(scanned_vertices.clone()).unwrap();
+        let v = g.most_tightly_connected(&scanned_vertices.clone()).unwrap();
         let expected_vertex = dc.iter().max_by_key(|kv| kv.1).unwrap().0;
 
         assert!(dc.iter().all(|(_v, degree)| *degree <= *dc.get(&v).unwrap_or(&0)), "expected {:?}, got {:?} with visited vertices {:?}", expected_vertex, v, scanned_vertices);
@@ -347,12 +387,12 @@ mod test {
     }
 
     #[quickcheck]
-    fn graph_can_merge_two_vertices(g: Graph<usize>, nu: usize, nv: usize) -> quickcheck::TestResult {
-        if nu >= TEST_GRAPH_VERTEX_COUNT || nv >= TEST_GRAPH_VERTEX_COUNT || nu == nv {
+    fn graph_can_merge_two_vertices(g: Graph<usize>, iu: usize, iv: usize) -> quickcheck::TestResult {
+        if iu >= TEST_GRAPH_VERTEX_COUNT || iv >= TEST_GRAPH_VERTEX_COUNT || iu == iv {
             return quickcheck::TestResult::discard();
         }
-        let u = Vertex::new(nu);
-        let v = Vertex::new(nv);
+        let u = Vertex::new(iu);
+        let v = Vertex::new(iv);
         let expected_merge = u.merge(&v);
         let mut merged_edges: Vec<(Vertex<usize>, &UnorderedPair<Vertex<usize>>)> = g.vertices
             .iter()
@@ -383,6 +423,42 @@ mod test {
         assert!(merged_edges.iter().all(|(x, UnorderedPair((s, t)))| !g0.edges.contains_key(&UnorderedPair((s.clone(), t.clone())))), "expected {:?} to not contain unmerged edges from {:?}", g0.edges, merged_edges);
         assert!(merged_edges.iter().all(|(x, _e)| g0.edges.get(&UnorderedPair((x.clone(), u.merge(&v)))) == Some(&2)), "expected {:?} to contain merged edges from {:?}", g0.edges, merged_edges);
         assert!(adopted_edges.iter().all(|(x, _e)| g0.edges.get(&UnorderedPair((x.clone(), u.merge(&v)))) == Some(&1)), "expected {:?} to contain adopted edges from {:?}", g0.edges, adopted_edges);
+        quickcheck::TestResult::passed()
+    }
+
+    #[quickcheck]
+    fn maximum_adjacency_search_traverses_graph_in_correct_order(g: Graph<usize>, i: usize) -> quickcheck::TestResult {
+        if i >= TEST_GRAPH_VERTEX_COUNT {
+            return quickcheck::TestResult::discard();
+        }
+
+        let mut vertices_visited: HashSet<Vertex<usize>> = HashSet::new();
+        let mut next_max: (Option<HashSet<Vertex<usize>>>, usize) = (None, usize::MIN);
+        let visitor = |v: &Vertex<usize>, adjacencies: &HashMap<&Vertex<usize>, usize>| {
+            vertices_visited.insert(v.clone());
+
+            if next_max.0 != None {
+                print!("visiting {:?}, maxed_adj {:?}\nadjacencies {:?}\n", v, next_max, adjacencies);
+                if !next_max.clone().0.unwrap().contains(v) {
+                    print!("\n\nfail\n\n");
+                }
+                assert!(next_max.clone().0.unwrap().contains(v));
+            }
+
+            let max_next = adjacencies.iter().filter(|(v,_)| !vertices_visited.contains(*v)).max_by(|(u, w), (v, w2)| w.cmp(w2));
+            if max_next == None {
+                return;
+            }
+
+            let (equivalent_vertices, _): (HashSet<(Vertex<usize>, usize)>, HashSet<(Vertex<usize>, usize)>) = adjacencies.iter()
+                                           .filter(|(v,_)| !vertices_visited.contains(*v))
+                                           .map(|(v, w)| (v.clone().clone(), *w))
+                                           .partition(|(v, w)| w == max_next.unwrap().1);
+            next_max = (Some(equivalent_vertices.iter().map(|(v, w)| v.clone()).collect()), *max_next.unwrap().1);
+        };
+
+        g.maximum_adjacency_search(visitor, &Vertex::new(i));
+        print!("PASSING EXAMPLE\n");
         quickcheck::TestResult::passed()
     }
 }
