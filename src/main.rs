@@ -45,22 +45,36 @@ impl<T: Clone + Eq + Ord + Hash> IntoIterator for Vertex<T> {
     }
 }
 
-#[derive(PartialEq, Eq, Clone, Debug, Hash, Ord, PartialOrd)]
-struct Edge<T: Clone + Eq + Ord + Hash>(UnorderedPair<Vertex<T>>);
+#[derive(Clone, Debug)]
+struct Edge<T: Clone + Eq + Ord + Hash>(usize, UnorderedPair<Vertex<T>>);
 
 impl<T: Clone + Eq + Ord + Hash> Edge<T> {
-    pub fn new(u: Vertex<T>, v: Vertex<T>) -> Edge<T> {
-        Edge(UnorderedPair((u, v)))
+    pub fn new(id: usize, u: Vertex<T>, v: Vertex<T>) -> Edge<T> {
+        Edge(id, UnorderedPair((u, v)))
     }
 
     pub fn partner(&self, v: &Vertex<T>) -> &Vertex<T> {
-        self.0.partner(v)
+        self.1.partner(v)
     }
 
     pub fn joins(&self, v: &Vertex<T>) -> bool {
-        self.0.contains(v)
+        self.1.contains(v)
     }
 
+}
+
+impl<T: Clone + Eq + Ord + Hash> PartialEq for Edge<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.1.eq(&other.1)
+    }
+}
+
+impl<T: Clone + Eq + Ord + Hash> Eq for Edge<T> { }
+
+impl<T: Clone + Eq + Ord + Hash> Hash for Edge<T> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.1.hash(state);
+    }
 }
 
 impl<T: Clone + Eq + Ord + Hash> Graph<T> {
@@ -70,10 +84,10 @@ impl<T: Clone + Eq + Ord + Hash> Graph<T> {
             edges: HashMap::new(),
         };
 
-        adjacency_list.into_iter().for_each(|(Edge(UnorderedPair((u, v))), _w)| {
+        adjacency_list.into_iter().for_each(|(Edge(i, UnorderedPair((u, v))), _w)| {
             g.vertices.insert(u.clone());
             g.vertices.insert(v.clone());
-            g.edges.insert(Edge::new(u, v), 1);
+            g.edges.insert(Edge::new(i, u, v), 1);
         });
 
         g
@@ -90,18 +104,18 @@ impl<T: Clone + Eq + Ord + Hash> Graph<T> {
                 g.vertices.insert(x.clone());
             }
         });
-        self.edges.iter().for_each(|(e@Edge(UnorderedPair((s, t))), w)| {
-            if *e != Edge::new(u.clone(), v.clone()) {
+        self.edges.iter().for_each(|(e@Edge(i, UnorderedPair((s, t))), w)| {
+            if *e != Edge::new(*i, u.clone(), v.clone()) {
                 if e.joins(&u) {
                     let x = e.partner(&u);
-                    let w0 = w + self.edges.get(&Edge::new(x.clone(), v.clone())).unwrap_or(&0);
-                    g.edges.insert(Edge::new(u.merge(v), x.clone()), w0);
+                    let w0 = w + self.edges.get(&Edge::new(*i, x.clone(), v.clone())).unwrap_or(&0);
+                    g.edges.insert(Edge::new(*i, u.merge(v), x.clone()), w0);
                 } else if e.joins(&v) {
                     let x = e.partner(&v);
-                    let w0 = w + self.edges.get(&Edge::new(x.clone(), u.clone())).unwrap_or(&0);
-                    g.edges.insert(Edge::new(u.merge(v), x.clone()), w0);
+                    let w0 = w + self.edges.get(&Edge::new(*i, x.clone(), u.clone())).unwrap_or(&0);
+                    g.edges.insert(Edge::new(*i, u.merge(v), x.clone()), w0);
                 } else {
-                    g.edges.insert(Edge::new(s.clone(), t.clone()), *w);
+                    g.edges.insert(Edge::new(*i, s.clone(), t.clone()), *w);
                 }
             }
         });
@@ -194,12 +208,14 @@ fn main() -> io::Result<()> {
 
 fn parse_input(input: &str) -> Result<Graph<&str>, &str> {
     input.lines().try_fold(Graph { vertices: HashSet::new(), edges: HashMap::new() }, |mut g, ln| -> Result<Graph<&str>, &str> {
+        let mut i = 0;
         let (u, vs) = ln.split_once(": ").ok_or("missing colon delimiter")?;
 
         g.vertices.insert(Vertex::new(u));
         vs.split(" ").for_each(|v| {
             g.vertices.insert(Vertex::new(v));
-            g.edges.insert(Edge::new(Vertex::new(u), Vertex::new(v)), 1);
+            g.edges.insert(Edge::new(i, Vertex::new(u), Vertex::new(v)), 1);
+            i += 1;
         });
 
         Ok(g)
@@ -221,6 +237,7 @@ mod test {
 
     impl quickcheck::Arbitrary for Graph<usize> {
         fn arbitrary(gen: &mut quickcheck::Gen) -> Graph<usize> {
+            let mut id = 0;
             Graph::from_adjacency_lists((0..TEST_GRAPH_VERTEX_COUNT)
                 .map(|i| (i, (0..TEST_GRAPH_VERTEX_COUNT).map(|j| i != j && bool::arbitrary(gen)).collect::<Vec<bool>>()))
                 .flat_map(|(i, neighbours)| {
@@ -228,7 +245,11 @@ mod test {
                         .iter()
                         .enumerate()
                         .filter(|adjacency| *adjacency.1)
-                        .map(|adjacency| (Edge::new(Vertex::new(i), Vertex::new(adjacency.0)), 1))
+                        .map(|adjacency| {
+                            let e = (Edge::new(i, Vertex::new(i), Vertex::new(adjacency.0)), 1);
+                            id += 1;
+                            e
+                        })
                         .collect::<Vec<(Edge<usize>, usize)>>()
                 })
                 .collect::<Vec<(Edge<usize>, usize)>>())
@@ -267,39 +288,39 @@ mod test {
             Vertex::new("rsh"),Vertex::new("rzs"),Vertex::new("xhk")
         ]);
         let expected_edges = HashMap::from_iter([
-            (Edge::new(Vertex::new("jqt"), Vertex::new("rhn")), 1),
-            (Edge::new(Vertex::new("jqt"), Vertex::new("xhk")), 1),
-            (Edge::new(Vertex::new("jqt"), Vertex::new("nvd")), 1),
-            (Edge::new(Vertex::new("rsh"), Vertex::new("frs")), 1),
-            (Edge::new(Vertex::new("rsh"), Vertex::new("pzl")), 1),
-            (Edge::new(Vertex::new("rsh"), Vertex::new("lsr")), 1),
-            (Edge::new(Vertex::new("xhk"), Vertex::new("hfx")), 1),
-            (Edge::new(Vertex::new("cmg"), Vertex::new("qnr")), 1),
-            (Edge::new(Vertex::new("cmg"), Vertex::new("nvd")), 1),
-            (Edge::new(Vertex::new("cmg"), Vertex::new("lhk")), 1),
-            (Edge::new(Vertex::new("cmg"), Vertex::new("bvb")), 1),
-            (Edge::new(Vertex::new("rhn"), Vertex::new("xhk")), 1),
-            (Edge::new(Vertex::new("rhn"), Vertex::new("bvb")), 1),
-            (Edge::new(Vertex::new("rhn"), Vertex::new("hfx")), 1),
-            (Edge::new(Vertex::new("bvb"), Vertex::new("xhk")), 1),
-            (Edge::new(Vertex::new("bvb"), Vertex::new("hfx")), 1),
-            (Edge::new(Vertex::new("pzl"), Vertex::new("lsr")), 1),
-            (Edge::new(Vertex::new("pzl"), Vertex::new("hfx")), 1),
-            (Edge::new(Vertex::new("pzl"), Vertex::new("nvd")), 1),
-            (Edge::new(Vertex::new("qnr"), Vertex::new("nvd")), 1),
-            (Edge::new(Vertex::new("ntq"), Vertex::new("jqt")), 1),
-            (Edge::new(Vertex::new("ntq"), Vertex::new("hfx")), 1),
-            (Edge::new(Vertex::new("ntq"), Vertex::new("bvb")), 1),
-            (Edge::new(Vertex::new("ntq"), Vertex::new("xhk")), 1),
-            (Edge::new(Vertex::new("nvd"), Vertex::new("lhk")), 1),
-            (Edge::new(Vertex::new("lsr"), Vertex::new("lhk")), 1),
-            (Edge::new(Vertex::new("rzs"), Vertex::new("qnr")), 1),
-            (Edge::new(Vertex::new("rzs"), Vertex::new("cmg")), 1),
-            (Edge::new(Vertex::new("rzs"), Vertex::new("lsr")), 1),
-            (Edge::new(Vertex::new("rzs"), Vertex::new("rsh")), 1),
-            (Edge::new(Vertex::new("frs"), Vertex::new("qnr")), 1),
-            (Edge::new(Vertex::new("frs"), Vertex::new("lhk")), 1),
-            (Edge::new(Vertex::new("frs"), Vertex::new("lsr")), 1),
+            (Edge::new(0, Vertex::new("jqt"), Vertex::new("rhn")), 1),
+            (Edge::new(1, Vertex::new("jqt"), Vertex::new("xhk")), 1),
+            (Edge::new(2, Vertex::new("jqt"), Vertex::new("nvd")), 1),
+            (Edge::new(3, Vertex::new("rsh"), Vertex::new("frs")), 1),
+            (Edge::new(4, Vertex::new("rsh"), Vertex::new("pzl")), 1),
+            (Edge::new(5, Vertex::new("rsh"), Vertex::new("lsr")), 1),
+            (Edge::new(6, Vertex::new("xhk"), Vertex::new("hfx")), 1),
+            (Edge::new(7, Vertex::new("cmg"), Vertex::new("qnr")), 1),
+            (Edge::new(8, Vertex::new("cmg"), Vertex::new("nvd")), 1),
+            (Edge::new(9, Vertex::new("cmg"), Vertex::new("lhk")), 1),
+            (Edge::new(10, Vertex::new("cmg"), Vertex::new("bvb")), 1),
+            (Edge::new(10, Vertex::new("rhn"), Vertex::new("xhk")), 1),
+            (Edge::new(11, Vertex::new("rhn"), Vertex::new("bvb")), 1),
+            (Edge::new(12, Vertex::new("rhn"), Vertex::new("hfx")), 1),
+            (Edge::new(13, Vertex::new("bvb"), Vertex::new("xhk")), 1),
+            (Edge::new(14, Vertex::new("bvb"), Vertex::new("hfx")), 1),
+            (Edge::new(15, Vertex::new("pzl"), Vertex::new("lsr")), 1),
+            (Edge::new(16, Vertex::new("pzl"), Vertex::new("hfx")), 1),
+            (Edge::new(17, Vertex::new("pzl"), Vertex::new("nvd")), 1),
+            (Edge::new(18, Vertex::new("qnr"), Vertex::new("nvd")), 1),
+            (Edge::new(19, Vertex::new("ntq"), Vertex::new("jqt")), 1),
+            (Edge::new(20, Vertex::new("ntq"), Vertex::new("hfx")), 1),
+            (Edge::new(21, Vertex::new("ntq"), Vertex::new("bvb")), 1),
+            (Edge::new(22, Vertex::new("ntq"), Vertex::new("xhk")), 1),
+            (Edge::new(23, Vertex::new("nvd"), Vertex::new("lhk")), 1),
+            (Edge::new(24, Vertex::new("lsr"), Vertex::new("lhk")), 1),
+            (Edge::new(25, Vertex::new("rzs"), Vertex::new("qnr")), 1),
+            (Edge::new(26, Vertex::new("rzs"), Vertex::new("cmg")), 1),
+            (Edge::new(27, Vertex::new("rzs"), Vertex::new("lsr")), 1),
+            (Edge::new(28, Vertex::new("rzs"), Vertex::new("rsh")), 1),
+            (Edge::new(29, Vertex::new("frs"), Vertex::new("qnr")), 1),
+            (Edge::new(30, Vertex::new("frs"), Vertex::new("lhk")), 1),
+            (Edge::new(31, Vertex::new("frs"), Vertex::new("lsr")), 1),
         ]);
 
         let g = parse_input(input).unwrap();
@@ -310,39 +331,39 @@ mod test {
     #[test]
     fn graphs_constructible_from_adjacency_lists() {
         let adjacency_list: HashMap<Edge<&str>, usize> = HashMap::from_iter([
-            (Edge::new(Vertex::new("jqt"), Vertex::new("rhn")), 1),
-            (Edge::new(Vertex::new("jqt"), Vertex::new("xhk")), 1),
-            (Edge::new(Vertex::new("jqt"), Vertex::new("nvd")), 1),
-            (Edge::new(Vertex::new("rsh"), Vertex::new("frs")), 1),
-            (Edge::new(Vertex::new("rsh"), Vertex::new("pzl")), 1),
-            (Edge::new(Vertex::new("rsh"), Vertex::new("lsr")), 1),
-            (Edge::new(Vertex::new("xhk"), Vertex::new("hfx")), 1),
-            (Edge::new(Vertex::new("cmg"), Vertex::new("qnr")), 1),
-            (Edge::new(Vertex::new("cmg"), Vertex::new("nvd")), 1),
-            (Edge::new(Vertex::new("cmg"), Vertex::new("lhk")), 1),
-            (Edge::new(Vertex::new("cmg"), Vertex::new("bvb")), 1),
-            (Edge::new(Vertex::new("rhn"), Vertex::new("xhk")), 1),
-            (Edge::new(Vertex::new("rhn"), Vertex::new("bvb")), 1),
-            (Edge::new(Vertex::new("rhn"), Vertex::new("hfx")), 1),
-            (Edge::new(Vertex::new("bvb"), Vertex::new("xhk")), 1),
-            (Edge::new(Vertex::new("bvb"), Vertex::new("hfx")), 1),
-            (Edge::new(Vertex::new("pzl"), Vertex::new("lsr")), 1),
-            (Edge::new(Vertex::new("pzl"), Vertex::new("hfx")), 1),
-            (Edge::new(Vertex::new("pzl"), Vertex::new("nvd")), 1),
-            (Edge::new(Vertex::new("qnr"), Vertex::new("nvd")), 1),
-            (Edge::new(Vertex::new("ntq"), Vertex::new("jqt")), 1),
-            (Edge::new(Vertex::new("ntq"), Vertex::new("hfx")), 1),
-            (Edge::new(Vertex::new("ntq"), Vertex::new("bvb")), 1),
-            (Edge::new(Vertex::new("ntq"), Vertex::new("xhk")), 1),
-            (Edge::new(Vertex::new("nvd"), Vertex::new("lhk")), 1),
-            (Edge::new(Vertex::new("lsr"), Vertex::new("lhk")), 1),
-            (Edge::new(Vertex::new("rzs"), Vertex::new("qnr")), 1),
-            (Edge::new(Vertex::new("rzs"), Vertex::new("cmg")), 1),
-            (Edge::new(Vertex::new("rzs"), Vertex::new("lsr")), 1),
-            (Edge::new(Vertex::new("rzs"), Vertex::new("rsh")), 1),
-            (Edge::new(Vertex::new("frs"), Vertex::new("qnr")), 1),
-            (Edge::new(Vertex::new("frs"), Vertex::new("lhk")), 1),
-            (Edge::new(Vertex::new("frs"), Vertex::new("lsr")), 1),
+            (Edge::new(0, Vertex::new("jqt"), Vertex::new("rhn")), 1),
+            (Edge::new(1, Vertex::new("jqt"), Vertex::new("xhk")), 1),
+            (Edge::new(2, Vertex::new("jqt"), Vertex::new("nvd")), 1),
+            (Edge::new(3, Vertex::new("rsh"), Vertex::new("frs")), 1),
+            (Edge::new(4, Vertex::new("rsh"), Vertex::new("pzl")), 1),
+            (Edge::new(5, Vertex::new("rsh"), Vertex::new("lsr")), 1),
+            (Edge::new(6, Vertex::new("xhk"), Vertex::new("hfx")), 1),
+            (Edge::new(7, Vertex::new("cmg"), Vertex::new("qnr")), 1),
+            (Edge::new(8, Vertex::new("cmg"), Vertex::new("nvd")), 1),
+            (Edge::new(9, Vertex::new("cmg"), Vertex::new("lhk")), 1),
+            (Edge::new(10, Vertex::new("cmg"), Vertex::new("bvb")), 1),
+            (Edge::new(10, Vertex::new("rhn"), Vertex::new("xhk")), 1),
+            (Edge::new(11, Vertex::new("rhn"), Vertex::new("bvb")), 1),
+            (Edge::new(12, Vertex::new("rhn"), Vertex::new("hfx")), 1),
+            (Edge::new(13, Vertex::new("bvb"), Vertex::new("xhk")), 1),
+            (Edge::new(14, Vertex::new("bvb"), Vertex::new("hfx")), 1),
+            (Edge::new(15, Vertex::new("pzl"), Vertex::new("lsr")), 1),
+            (Edge::new(16, Vertex::new("pzl"), Vertex::new("hfx")), 1),
+            (Edge::new(17, Vertex::new("pzl"), Vertex::new("nvd")), 1),
+            (Edge::new(18, Vertex::new("qnr"), Vertex::new("nvd")), 1),
+            (Edge::new(19, Vertex::new("ntq"), Vertex::new("jqt")), 1),
+            (Edge::new(20, Vertex::new("ntq"), Vertex::new("hfx")), 1),
+            (Edge::new(21, Vertex::new("ntq"), Vertex::new("bvb")), 1),
+            (Edge::new(22, Vertex::new("ntq"), Vertex::new("xhk")), 1),
+            (Edge::new(23, Vertex::new("nvd"), Vertex::new("lhk")), 1),
+            (Edge::new(24, Vertex::new("lsr"), Vertex::new("lhk")), 1),
+            (Edge::new(25, Vertex::new("rzs"), Vertex::new("qnr")), 1),
+            (Edge::new(26, Vertex::new("rzs"), Vertex::new("cmg")), 1),
+            (Edge::new(27, Vertex::new("rzs"), Vertex::new("lsr")), 1),
+            (Edge::new(28, Vertex::new("rzs"), Vertex::new("rsh")), 1),
+            (Edge::new(29, Vertex::new("frs"), Vertex::new("qnr")), 1),
+            (Edge::new(30, Vertex::new("frs"), Vertex::new("lhk")), 1),
+            (Edge::new(31, Vertex::new("frs"), Vertex::new("lsr")), 1),
         ]);
         let expected_vertices = HashSet::from_iter([
             Vertex::new("bvb"),Vertex::new("cmg"),Vertex::new("frs"),Vertex::new("hfx"),
@@ -360,7 +381,7 @@ mod test {
         g.vertices.difference(&scanned_vertices).max_by_key(|v| {
             g.edges
                 .iter()
-                .filter(|(Edge(UnorderedPair(e)), _w)| (**v == e.0 && scanned_vertices.contains(&e.1)) || (**v == e.1 && scanned_vertices.contains(&e.0)))
+                .filter(|(Edge(_, UnorderedPair(e)), _w)| (**v == e.0 && scanned_vertices.contains(&e.1)) || (**v == e.1 && scanned_vertices.contains(&e.0)))
                 .collect::<Vec<(&Edge<T>, &usize)>>().len()
         }).cloned()
     }
@@ -373,7 +394,7 @@ mod test {
         }
 
         let SubsetVector(was_scanned) = previously_scanned;
-        let mut dc = g.edges.iter().fold(HashMap::<Vertex<usize>, usize>::new(), |mut h, (Edge(UnorderedPair((u, v))), _w)| {
+        let mut dc = g.edges.iter().fold(HashMap::<Vertex<usize>, usize>::new(), |mut h, (Edge(_, UnorderedPair((u, v))), _w)| {
             // all vertices are singleton sets by construction
             if !was_scanned[*u.0.first().unwrap().deref()] && was_scanned[*v.0.first().unwrap().deref()] {
                 match h.get(u) {
@@ -411,18 +432,18 @@ mod test {
         let expected_merge = u.merge(&v);
         let mut merged_edges: Vec<(Vertex<usize>, &Edge<usize>)> = g.vertices
             .iter()
-            .filter(|x| g.edges.contains_key(&Edge::new(x.clone().clone(), u.clone())) && g.edges.contains_key(&Edge::new(x.clone().clone(), v.clone())))
+            .filter(|x| g.edges.contains_key(&Edge::new(0, x.clone().clone(), u.clone())) && g.edges.contains_key(&Edge::new(0, x.clone().clone(), v.clone())))
             .flat_map(|x| g.edges
                 .iter()
-                .filter(|(e, _w)| **e == Edge::new(x.clone(), u.clone()) || **e == Edge::new(x.clone(), v.clone()))
+                .filter(|(e, _w)| **e == Edge::new(0, x.clone(), u.clone()) || **e == Edge::new(0, x.clone(), v.clone()))
                 .map(|(e, w)| (x.clone(), e)))
             .collect();
         let mut adopted_edges: Vec<(Vertex<usize>, &Edge<usize>)> = g.vertices
             .difference(&HashSet::from_iter(expected_merge.clone().into_iter().map(|x| Vertex::new(*x))))
-            .filter(|x| g.edges.contains_key(&Edge::new(x.clone().clone(), u.clone())) ^ g.edges.contains_key(&Edge::new(x.clone().clone(), v.clone())))
+            .filter(|x| g.edges.contains_key(&Edge::new(0, x.clone().clone(), u.clone())) ^ g.edges.contains_key(&Edge::new(0, x.clone().clone(), v.clone())))
             .flat_map(|x| g.edges
                 .iter()
-                .filter(|(e, _w)| **e == Edge::new(x.clone(), u.clone()) || **e == Edge::new(x.clone(), v.clone()))
+                .filter(|(e, _w)| **e == Edge::new(0, x.clone(), u.clone()) || **e == Edge::new(0, x.clone(), v.clone()))
                 .map(|(e, w)| (x.clone(), e)))
             .collect();
 
@@ -434,10 +455,10 @@ mod test {
         assert!(!g0.vertices.contains(&v), "expected {:?} to not contain {:?}", g0.vertices, v);
         assert!(g0.vertices.contains(&expected_merge));
         assert!(remaining_vertices.iter().all(|x| g0.vertices.contains(x)), "expected {:?} to contain {:?}", g0.vertices, remaining_vertices);
-        assert!(!g0.edges.contains_key(&Edge::new(u.clone(), v.clone())), "expected {:?} to not contain edge {:?}", g0.edges, Edge::new(Vertex::new(u.clone()), Vertex::new(v.clone())));
+        assert!(!g0.edges.contains_key(&Edge::new(0, u.clone(), v.clone())), "expected {:?} to not contain edge {:?}", g0.edges, Edge::new(0, Vertex::new(u.clone()), Vertex::new(v.clone())));
         assert!(merged_edges.iter().all(|(x, e)| !g0.edges.contains_key(e)), "expected {:?} to not contain unmerged edges from {:?}", g0.edges, merged_edges);
-        assert!(merged_edges.iter().all(|(x, _e)| g0.edges.get(&Edge::new(x.clone(), u.merge(&v))) == Some(&2)), "expected {:?} to contain merged edges from {:?}", g0.edges, merged_edges);
-        assert!(adopted_edges.iter().all(|(x, _e)| g0.edges.get(&Edge::new(x.clone(), u.merge(&v))) == Some(&1)), "expected {:?} to contain adopted edges from {:?}", g0.edges, adopted_edges);
+        assert!(merged_edges.iter().all(|(x, _e)| g0.edges.get(&Edge::new(0, x.clone(), u.merge(&v))) == Some(&2)), "expected {:?} to contain merged edges from {:?}", g0.edges, merged_edges);
+        assert!(adopted_edges.iter().all(|(x, _e)| g0.edges.get(&Edge::new(0, x.clone(), u.merge(&v))) == Some(&1)), "expected {:?} to contain adopted edges from {:?}", g0.edges, adopted_edges);
         quickcheck::TestResult::passed()
     }
 
